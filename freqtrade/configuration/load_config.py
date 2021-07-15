@@ -11,6 +11,7 @@ import rapidjson
 
 from freqtrade.exceptions import OperationalException
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +36,15 @@ def log_config_error_range(path: str, errmsg: str) -> str:
             else:
                 return subtext
     return ''
+
+
+def load_file(path: Path) -> Dict[str, Any]:
+    try:
+        with path.open('r') as file:
+            config = rapidjson.load(file, parse_mode=CONFIG_PARSE_MODE)
+    except FileNotFoundError:
+        raise OperationalException(f'File "{path}" not found!')
+    return config
 
 
 def load_config_file(path: str) -> Dict[str, Any]:

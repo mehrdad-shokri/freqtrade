@@ -147,7 +147,7 @@ Let's try to backtest 1 month (January 2019) of 5m candles using an example stra
 freqtrade backtesting --timerange 20190101-20190201 --timeframe 5m
 ```
 
-Assuming `startup_candle_count` is set to 100, backtesting knows it needs 100 candles to generate valid buy signals. It will load data from `20190101 - (100 * 5m)` - which is ~2019-12-31 15:30:00.
+Assuming `startup_candle_count` is set to 100, backtesting knows it needs 100 candles to generate valid buy signals. It will load data from `20190101 - (100 * 5m)` - which is ~2018-12-31 15:30:00.
 If this data is available, indicators will be calculated with this extended timerange. The instable startup period (up to 2019-01-01 00:00:00) will then be removed before starting backtesting.
 
 !!! Note
@@ -159,7 +159,7 @@ Edit the method `populate_buy_trend()` in your strategy file to update your buy 
 
 It's important to always return the dataframe without removing/modifying the columns `"open", "high", "low", "close", "volume"`, otherwise these fields would contain something unexpected.
 
-This will method will also define a new column, `"buy"`, which needs to contain 1 for buys, and 0 for "no action".
+This method will also define a new column, `"buy"`, which needs to contain 1 for buys, and 0 for "no action".
 
 Sample from `user_data/strategies/sample_strategy.py`:
 
@@ -193,7 +193,7 @@ Please note that the sell-signal is only used if `use_sell_signal` is set to tru
 
 It's important to always return the dataframe without removing/modifying the columns `"open", "high", "low", "close", "volume"`, otherwise these fields would contain something unexpected.
 
-This will method will also define a new column, `"sell"`, which needs to contain 1 for sells, and 0 for "no action".
+This method will also define a new column, `"sell"`, which needs to contain 1 for sells, and 0 for "no action".
 
 Sample from `user_data/strategies/sample_strategy.py`:
 
@@ -300,33 +300,7 @@ The metadata-dict (available for `populate_buy_trend`, `populate_sell_trend`, `p
 Currently this is `pair`, which can be accessed using `metadata['pair']` - and will return a pair in the format `XRP/BTC`.
 
 The Metadata-dict should not be modified and does not persist information across multiple calls.
-Instead, have a look at the section [Storing information](#Storing-information)
-
-### Storing information
-
-Storing information can be accomplished by creating a new dictionary within the strategy class.
-
-The name of the variable can be chosen at will, but should be prefixed with `cust_` to avoid naming collisions with predefined strategy variables.
-
-```python
-class Awesomestrategy(IStrategy):
-    # Create custom dictionary
-    cust_info = {}
-    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Check if the entry already exists
-        if "crosstime" in self.cust_info[metadata["pair"]:
-            self.cust_info[metadata["pair"]["crosstime"] += 1
-        else:
-            self.cust_info[metadata["pair"]["crosstime"] = 1
-```
-
-!!! Warning
-    The data is not persisted after a bot-restart (or config-reload). Also, the amount of data should be kept smallish (no DataFrames and such), otherwise the bot will start to consume a lot of memory and eventually run out of memory and crash.
-
-!!! Note
-    If the data is pair-specific, make sure to use pair as one of the keys in the dictionary.
-
-***
+Instead, have a look at the section [Storing information](strategy-advanced.md#Storing-information)
 
 ## Additional data (informative_pairs)
 
@@ -366,8 +340,8 @@ All methods return `None` in case of failure (do not raise an exception).
 Please always check the mode of operation to select the correct method to get data (samples see below).
 
 !!! Warning "Hyperopt"
-    Dataprovider is available during hyperopt, however it can only be used in `populate_indicators()`.
-    It is not available in `populate_buy()` and `populate_sell()` methods.
+    Dataprovider is available during hyperopt, however it can only be used in `populate_indicators()` within a strategy.
+    It is not available in `populate_buy()` and `populate_sell()` methods, nor in `populate_indicators()`, if this method located in the hyperopt file.
 
 ### Possible options for DataProvider
 
@@ -394,7 +368,7 @@ if self.dp:
 
 ### *current_whitelist()*
 
-Imagine you've developed a strategy that trades the `5m` timeframe using signals generated from a `1d` timeframe on the top 10 volume pairs by volume. 
+Imagine you've developed a strategy that trades the `5m` timeframe using signals generated from a `1d` timeframe on the top 10 volume pairs by volume.
 
 The strategy might look something like this:
 
@@ -413,7 +387,7 @@ This is where calling `self.dp.current_whitelist()` comes in handy.
         pairs = self.dp.current_whitelist()
         # Assign tf to each pair so they can be downloaded and cached for strategy.
         informative_pairs = [(pair, '1d') for pair in pairs]
-        return informative_pairs   
+        return informative_pairs
 ```
 
 ### *get_pair_dataframe(pair, timeframe)*
@@ -439,8 +413,9 @@ It can also be used in specific callbacks to get the signal that caused the acti
 ``` python
 # fetch current dataframe
 if self.dp:
-    dataframe, last_updated = self.dp.get_analyzed_dataframe(pair=metadata['pair'],
-                                                             timeframe=self.timeframe)
+    if self.dp.runmode.value in ('live', 'dry_run'):
+        dataframe, last_updated = self.dp.get_analyzed_dataframe(pair=metadata['pair'],
+                                                                 timeframe=self.timeframe)
 ```
 
 !!! Note "No data available"
@@ -457,8 +432,28 @@ if self.dp:
         dataframe['best_ask'] = ob['asks'][0][0]
 ```
 
-!!! Warning
-    The order book is not part of the historic data which means backtesting and hyperopt will not work correctly if this method is used.
+The orderbook structure is aligned with the order structure from [ccxt](https://github.com/ccxt/ccxt/wiki/Manual#order-book-structure), so the result will look as follows:
+
+``` js
+{
+    'bids': [
+        [ price, amount ], // [ float, float ]
+        [ price, amount ],
+        ...
+    ],
+    'asks': [
+        [ price, amount ],
+        [ price, amount ],
+        //...
+    ],
+    //...
+}
+```
+
+Therefore, using `ob['bids'][0][0]` as demonstrated above will result in using the best bid price. `ob['bids'][0][1]` would look at the amount at this orderbook position.
+
+!!! Warning "Warning about backtesting"
+    The order book is not part of the historic data which means backtesting and hyperopt will not work correctly if this method is used, as the method will return uptodate values.
 
 ### *ticker(pair)*
 
@@ -483,6 +478,9 @@ if self.dp:
 ### Complete Data-provider sample
 
 ```python
+from freqtrade.strategy import IStrategy, merge_informative_pair
+from pandas import DataFrame
+
 class SampleStrategy(IStrategy):
     # strategy init stuff...
 
@@ -513,17 +511,12 @@ class SampleStrategy(IStrategy):
         # Get the 14 day rsi
         informative['rsi'] = ta.RSI(informative, timeperiod=14)
 
-        # Rename columns to be unique
-        informative.columns = [f"{col}_{inf_tf}" for col in informative.columns]
-        # Assuming inf_tf = '1d' - then the columns will now be:
-        # date_1d, open_1d, high_1d, low_1d, close_1d, rsi_1d
-
-        # Combine the 2 dataframes
-        # all indicators on the informative sample MUST be calculated before this point
-        dataframe = pd.merge(dataframe, informative, left_on='date', right_on=f'date_{inf_tf}', how='left')
-        # FFill to have the 1d value available in every row throughout the day.
-        # Without this, comparisons would only work once per day.
-        dataframe = dataframe.ffill()
+        # Use the helper function merge_informative_pair to safely merge the pair
+        # Automatically renames the columns and merges a shorter timeframe dataframe and a longer timeframe informative pair
+        # use ffill to have the 1d value available in every row throughout the day.
+        # Without this, comparisons between columns of the original and the informative pair would only work once per day.
+        # Full documentation of this method, see below
+        dataframe = merge_informative_pair(dataframe, informative, self.timeframe, inf_tf, ffill=True)
 
         # Calculate rsi of the original dataframe (5m timeframe)
         dataframe['rsi'] = ta.RSI(dataframe, timeperiod=14)
@@ -546,6 +539,106 @@ class SampleStrategy(IStrategy):
 ```
 
 ***
+
+## Helper functions
+
+### *merge_informative_pair()*
+
+This method helps you merge an informative pair to a regular dataframe without lookahead bias.
+It's there to help you merge the dataframe in a safe and consistent way.
+
+Options:
+
+- Rename the columns for you to create unique columns
+- Merge the dataframe without lookahead bias
+- Forward-fill (optional)
+
+All columns of the informative dataframe will be available on the returning dataframe in a renamed fashion:
+
+!!! Example "Column renaming"
+    Assuming `inf_tf = '1d'` the resulting columns will be:
+
+    ``` python
+    'date', 'open', 'high', 'low', 'close', 'rsi'                     # from the original dataframe
+    'date_1d', 'open_1d', 'high_1d', 'low_1d', 'close_1d', 'rsi_1d'   # from the informative dataframe
+    ```
+
+??? Example "Column renaming - 1h"
+    Assuming `inf_tf = '1h'` the resulting columns will be:
+
+    ``` python
+    'date', 'open', 'high', 'low', 'close', 'rsi'                     # from the original dataframe
+    'date_1h', 'open_1h', 'high_1h', 'low_1h', 'close_1h', 'rsi_1h'   # from the informative dataframe
+    ```
+
+??? Example "Custom implementation"
+    A custom implementation for this is possible, and can be done as follows:
+
+    ``` python
+
+    # Shift date by 1 candle
+    # This is necessary since the data is always the "open date"
+    # and a 15m candle starting at 12:15 should not know the close of the 1h candle from 12:00 to 13:00
+    minutes = timeframe_to_minutes(inf_tf)
+    # Only do this if the timeframes are different:
+    informative['date_merge'] = informative["date"] + pd.to_timedelta(minutes, 'm')
+
+    # Rename columns to be unique
+    informative.columns = [f"{col}_{inf_tf}" for col in informative.columns]
+    # Assuming inf_tf = '1d' - then the columns will now be:
+    # date_1d, open_1d, high_1d, low_1d, close_1d, rsi_1d
+
+    # Combine the 2 dataframes
+    # all indicators on the informative sample MUST be calculated before this point
+    dataframe = pd.merge(dataframe, informative, left_on='date', right_on=f'date_merge_{inf_tf}', how='left')
+    # FFill to have the 1d value available in every row throughout the day.
+    # Without this, comparisons would only work once per day.
+    dataframe = dataframe.ffill()
+
+    ```
+
+!!! Warning "Informative timeframe < timeframe"
+    Using informative timeframes smaller than the dataframe timeframe is not recommended with this method, as it will not use any of the additional information this would provide.
+    To use the more detailed information properly, more advanced methods should be applied (which are out of scope for freqtrade documentation, as it'll depend on the respective need).
+
+***
+
+### *stoploss_from_open()*
+
+Stoploss values returned from `custom_stoploss` must specify a percentage relative to `current_rate`, but sometimes you may want to specify a stoploss relative to the open price instead. `stoploss_from_open()` is a helper function to calculate a stoploss value that can be returned from `custom_stoploss` which will be equivalent to the desired percentage above the open price.
+
+??? Example "Returning a stoploss relative to the open price from the custom stoploss function"
+
+    Say the open price was $100, and `current_price` is $121 (`current_profit` will be `0.21`).  
+
+    If we want a stop price at 7% above the open price we can call `stoploss_from_open(0.07, current_profit)` which will return `0.1157024793`.  11.57% below $121 is $107, which is the same as 7% above $100.
+
+
+    ``` python
+
+    from datetime import datetime
+    from freqtrade.persistence import Trade
+    from freqtrade.strategy import IStrategy, stoploss_from_open
+
+    class AwesomeStrategy(IStrategy):
+
+        # ... populate_* methods
+
+        use_custom_stoploss = True
+
+        def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
+                            current_rate: float, current_profit: float, **kwargs) -> float:
+
+            # once the profit has risen above 10%, keep the stoploss at 7% above the open price
+            if current_profit > 0.10:
+                return stoploss_from_open(0.07, current_profit)
+
+            return 1
+
+    ```
+
+    Full examples can be found in the [Custom stoploss](strategy-advanced.md#custom-stoploss) section of the Documentation.
+
 
 ## Additional data (Wallets)
 
@@ -587,7 +680,7 @@ The following example queries for the current pair and trades from today, howeve
 if self.config['runmode'].value in ('live', 'dry_run'):
     trades = Trade.get_trades([Trade.pair == metadata['pair'],
                                Trade.open_date > datetime.utcnow() - timedelta(days=1),
-                               Trade.is_open == False,
+                               Trade.is_open.is_(False),
                 ]).order_by(Trade.close_date).all()
     # Summarize profit for this pair.
     curdayprofit = sum(trade.close_profit for trade in trades)
@@ -627,18 +720,18 @@ Locked pairs will show the message `Pair <pair> is currently locked.`.
 
 Sometimes it may be desired to lock a pair after certain events happen (e.g. multiple losing trades in a row).
 
-Freqtrade has an easy method to do this from within the strategy, by calling `self.lock_pair(pair, until)`.
-`until` must be a datetime object in the future, after which trading will be reenabled for that pair.
+Freqtrade has an easy method to do this from within the strategy, by calling `self.lock_pair(pair, until, [reason])`.
+`until` must be a datetime object in the future, after which trading will be re-enabled for that pair, while `reason` is an optional string detailing why the pair was locked.
 
 Locks can also be lifted manually, by calling `self.unlock_pair(pair)`.
 
 To verify if a pair is currently locked, use `self.is_pair_locked(pair)`.
 
 !!! Note
-    Locked pairs are not persisted, so a restart of the bot, or calling `/reload_config` will reset locked pairs.
+    Locked pairs will always be rounded up to the next candle. So assuming a `5m` timeframe, a lock with `until` set to 10:18 will lock the pair until the candle from 10:15-10:20 will be finished.
 
 !!! Warning
-    Locking pairs is not functioning during backtesting.
+    Manually locking pairs is not available during backtesting, only locks via Protections are allowed.
 
 #### Pair locking example
 
@@ -653,7 +746,7 @@ if self.config['runmode'].value in ('live', 'dry_run'):
    # fetch closed trades for the last 2 days
     trades = Trade.get_trades([Trade.pair == metadata['pair'],
                                Trade.open_date > datetime.utcnow() - timedelta(days=2),
-                               Trade.is_open == False,
+                               Trade.is_open.is_(False),
                 ]).all()
     # Analyze the conditions you'd like to lock the pair .... will probably be different for every strategy
     sumprofit = sum(trade.close_profit for trade in trades)
@@ -703,8 +796,6 @@ The following lists some common patterns which should be avoided to prevent frus
 To get additional Ideas for strategies, head over to our [strategy repository](https://github.com/freqtrade/freqtrade-strategies). Feel free to use them as they are - but results will depend on the current market situation, pairs used etc. - therefore please backtest the strategy for your exchange/desired pairs first, evaluate carefully, use at your own risk.
 Feel free to use any of them as inspiration for your own strategies.
 We're happy to accept Pull Requests containing new Strategies to that repo.
-
-We also got a *strategy-sharing* channel in our [Slack community](https://join.slack.com/t/highfrequencybot/shared_invite/enQtNjU5ODcwNjI1MDU3LTU1MTgxMjkzNmYxNWE1MDEzYzQ3YmU4N2MwZjUyNjJjODRkMDVkNjg4YTAyZGYzYzlhOTZiMTE4ZjQ4YzM0OGE) which is a great place to get and/or share ideas.
 
 ## Next step
 

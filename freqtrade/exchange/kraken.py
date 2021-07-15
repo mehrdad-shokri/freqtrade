@@ -4,11 +4,11 @@ from typing import Any, Dict
 
 import ccxt
 
-from freqtrade.exceptions import (DDosProtection, ExchangeError,
-                                  InvalidOrderException, OperationalException,
-                                  TemporaryError)
+from freqtrade.exceptions import (DDosProtection, InsufficientFundsError, InvalidOrderException,
+                                  OperationalException, TemporaryError)
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.common import retrier
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ class Kraken(Exchange):
     _params: Dict = {"trading_agreement": "agree"}
     _ft_has: Dict = {
         "stoploss_on_exchange": True,
+        "ohlcv_candle_limit": 720,
         "trades_pagination": "id",
         "trades_pagination_arg": "since",
     }
@@ -47,11 +48,13 @@ class Kraken(Exchange):
 
             orders = self._api.fetch_open_orders()
             order_list = [(x["symbol"].split("/")[0 if x["side"] == "sell" else 1],
-                           x["remaining"],
-                           # Don't remove the below comment, this can be important for debuggung
+                           x["remaining"] if x["side"] == "sell" else x["remaining"] * x["price"],
+                           # Don't remove the below comment, this can be important for debugging
                            # x["side"], x["amount"],
                            ) for x in orders]
             for bal in balances:
+                if not isinstance(balances[bal], dict):
+                    continue
                 balances[bal]['used'] = sum(order[1] for order in order_list if order[0] == bal)
                 balances[bal]['free'] = balances[bal]['total'] - balances[bal]['used']
 
@@ -69,7 +72,8 @@ class Kraken(Exchange):
         Verify stop_loss against stoploss-order value (limit or price)
         Returns True if adjustment is necessary.
         """
-        return order['type'] == 'stop-loss' and stop_loss > float(order['price'])
+        return (order['type'] in ('stop-loss', 'stop-loss-limit')
+                and stop_loss > float(order['price']))
 
     @retrier(retries=0)
     def stoploss(self, pair: str, amount: float, stop_price: float, order_types: Dict) -> Dict:
@@ -77,28 +81,34 @@ class Kraken(Exchange):
         Creates a stoploss market order.
         Stoploss market orders is the only stoploss type supported by kraken.
         """
+        params = self._params.copy()
 
-        ordertype = "stop-loss"
+        if order_types.get('stoploss', 'market') == 'limit':
+            ordertype = "stop-loss-limit"
+            limit_price_pct = order_types.get('stoploss_on_exchange_limit_ratio', 0.99)
+            limit_rate = stop_price * limit_price_pct
+            params['price2'] = self.price_to_precision(pair, limit_rate)
+        else:
+            ordertype = "stop-loss"
 
         stop_price = self.price_to_precision(pair, stop_price)
 
         if self._config['dry_run']:
-            dry_order = self.dry_run_order(
+            dry_order = self.create_dry_run_order(
                 pair, ordertype, "sell", amount, stop_price)
             return dry_order
 
         try:
-            params = self._params.copy()
-
             amount = self.amount_to_precision(pair, amount)
 
             order = self._api.create_order(symbol=pair, type=ordertype, side='sell',
                                            amount=amount, price=stop_price, params=params)
+            self._log_exchange_response('create_stoploss_order', order)
             logger.info('stoploss order added for %s. '
                         'stop price: %s.', pair, stop_price)
             return order
         except ccxt.InsufficientFunds as e:
-            raise ExchangeError(
+            raise InsufficientFundsError(
                 f'Insufficient funds to create {ordertype} sell order on market {pair}. '
                 f'Tried to create stoploss with amount {amount} at stoploss {stop_price}. '
                 f'Message: {e}') from e

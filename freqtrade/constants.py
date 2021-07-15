@@ -11,7 +11,8 @@ DEFAULT_EXCHANGE = 'bittrex'
 PROCESS_THROTTLE_SECS = 5  # sec
 HYPEROPT_EPOCH = 100  # epochs
 RETRY_TIMEOUT = 30  # sec
-DEFAULT_HYPEROPT_LOSS = 'DefaultHyperOptLoss'
+TIMEOUT_UNITS = ['minutes', 'seconds']
+EXPORT_OPTIONS = ['none', 'trades']
 DEFAULT_DB_PROD_URL = 'sqlite:///tradesv3.sqlite'
 DEFAULT_DB_DRYRUN_URL = 'sqlite:///tradesv3.dryrun.sqlite'
 UNLIMITED_STAKE_AMOUNT = 'unlimited'
@@ -21,22 +22,48 @@ REQUIRED_ORDERTYPES = ['buy', 'sell', 'stoploss', 'stoploss_on_exchange']
 ORDERBOOK_SIDES = ['ask', 'bid']
 ORDERTYPE_POSSIBILITIES = ['limit', 'market']
 ORDERTIF_POSSIBILITIES = ['gtc', 'fok', 'ioc']
+HYPEROPT_LOSS_BUILTIN = ['ShortTradeDurHyperOptLoss', 'OnlyProfitHyperOptLoss',
+                         'SharpeHyperOptLoss', 'SharpeHyperOptLossDaily',
+                         'SortinoHyperOptLoss', 'SortinoHyperOptLossDaily']
 AVAILABLE_PAIRLISTS = ['StaticPairList', 'VolumePairList',
-                       'AgeFilter', 'PrecisionFilter', 'PriceFilter',
-                       'ShuffleFilter', 'SpreadFilter']
-AVAILABLE_DATAHANDLERS = ['json', 'jsongz']
+                       'AgeFilter', 'OffsetFilter', 'PerformanceFilter',
+                       'PrecisionFilter', 'PriceFilter', 'RangeStabilityFilter',
+                       'ShuffleFilter', 'SpreadFilter', 'VolatilityFilter']
+AVAILABLE_PROTECTIONS = ['CooldownPeriod', 'LowProfitPairs', 'MaxDrawdown', 'StoplossGuard']
+AVAILABLE_DATAHANDLERS = ['json', 'jsongz', 'hdf5']
 DRY_RUN_WALLET = 1000
+DATETIME_PRINT_FORMAT = '%Y-%m-%d %H:%M:%S'
 MATH_CLOSE_PREC = 1e-14  # Precision used for float comparisons
 DEFAULT_DATAFRAME_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume']
 # Don't modify sequence of DEFAULT_TRADES_COLUMNS
 # it has wide consequences for stored trades files
 DEFAULT_TRADES_COLUMNS = ['timestamp', 'id', 'type', 'side', 'price', 'amount', 'cost']
 
+LAST_BT_RESULT_FN = '.last_result.json'
+FTHYPT_FILEVERSION = 'fthypt_fileversion'
+
 USERPATH_HYPEROPTS = 'hyperopts'
 USERPATH_STRATEGIES = 'strategies'
 USERPATH_NOTEBOOKS = 'notebooks'
 
-# Soure files with destination directories within user-directory
+TELEGRAM_SETTING_OPTIONS = ['on', 'off', 'silent']
+
+
+# Define decimals per coin for outputs
+# Only used for outputs.
+DECIMAL_PER_COIN_FALLBACK = 3  # Should be low to avoid listing all possible FIAT's
+DECIMALS_PER_COIN = {
+    'BTC': 8,
+    'ETH': 5,
+}
+
+DUST_PER_COIN = {
+    'BTC': 0.0001,
+    'ETH': 0.01
+}
+
+
+# Source files with destination directories within user-directory
 USER_DATA_FILES = {
     'sample_strategy.py': USERPATH_STRATEGIES,
     'sample_hyperopt_advanced.py': USERPATH_HYPEROPTS,
@@ -72,6 +99,7 @@ CONF_SCHEMA = {
     'type': 'object',
     'properties': {
         'max_open_trades': {'type': ['integer', 'number'], 'minimum': -1},
+        'new_pairs_days': {'type': 'integer', 'default': 30},
         'timeframe': {'type': 'string'},
         'stake_currency': {'type': 'string'},
         'stake_amount': {
@@ -84,6 +112,10 @@ CONF_SCHEMA = {
             'minimum': 0.1,
             'maximum': 1,
             'default': 0.99
+        },
+        'available_capital': {
+            'type': 'number',
+            'minimum': 0,
         },
         'amend_last_stake_amount': {'type': 'boolean', 'default': False},
         'last_stake_amount_min_ratio': {
@@ -107,11 +139,18 @@ CONF_SCHEMA = {
         'trailing_stop_positive': {'type': 'number', 'minimum': 0, 'maximum': 1},
         'trailing_stop_positive_offset': {'type': 'number', 'minimum': 0, 'maximum': 1},
         'trailing_only_offset_is_reached': {'type': 'boolean'},
+        'use_sell_signal': {'type': 'boolean'},
+        'sell_profit_only': {'type': 'boolean'},
+        'sell_profit_offset': {'type': 'number'},
+        'ignore_roi_if_buy_signal': {'type': 'boolean'},
+        'ignore_buying_expired_candle_after': {'type': 'number'},
+        'bot_name': {'type': 'string'},
         'unfilledtimeout': {
             'type': 'object',
             'properties': {
                 'buy': {'type': 'number', 'minimum': 1},
-                'sell': {'type': 'number', 'minimum': 1}
+                'sell': {'type': 'number', 'minimum': 1},
+                'unit': {'type': 'string', 'enum': TIMEOUT_UNITS, 'default': 'minutes'}
             }
         },
         'bid_strategy': {
@@ -125,7 +164,7 @@ CONF_SCHEMA = {
                 },
                 'price_side': {'type': 'string', 'enum': ORDERBOOK_SIDES, 'default': 'bid'},
                 'use_order_book': {'type': 'boolean'},
-                'order_book_top': {'type': 'integer', 'maximum': 20, 'minimum': 1},
+                'order_book_top': {'type': 'integer', 'minimum': 1, 'maximum': 50, },
                 'check_depth_of_market': {
                     'type': 'object',
                     'properties': {
@@ -134,25 +173,30 @@ CONF_SCHEMA = {
                     }
                 },
             },
-            'required': ['ask_last_balance']
+            'required': ['price_side']
         },
         'ask_strategy': {
             'type': 'object',
             'properties': {
                 'price_side': {'type': 'string', 'enum': ORDERBOOK_SIDES, 'default': 'ask'},
+                'bid_last_balance': {
+                    'type': 'number',
+                    'minimum': 0,
+                    'maximum': 1,
+                    'exclusiveMaximum': False,
+                },
                 'use_order_book': {'type': 'boolean'},
-                'order_book_min': {'type': 'integer', 'minimum': 1},
-                'order_book_max': {'type': 'integer', 'minimum': 1, 'maximum': 50},
-                'use_sell_signal': {'type': 'boolean'},
-                'sell_profit_only': {'type': 'boolean'},
-                'ignore_roi_if_buy_signal': {'type': 'boolean'}
-            }
+                'order_book_top': {'type': 'integer', 'minimum': 1, 'maximum': 50, },
+            },
+            'required': ['price_side']
         },
         'order_types': {
             'type': 'object',
             'properties': {
                 'buy': {'type': 'string', 'enum': ORDERTYPE_POSSIBILITIES},
                 'sell': {'type': 'string', 'enum': ORDERTYPE_POSSIBILITIES},
+                'forcesell': {'type': 'string', 'enum': ORDERTYPE_POSSIBILITIES},
+                'forcebuy': {'type': 'string', 'enum': ORDERTYPE_POSSIBILITIES},
                 'emergencysell': {'type': 'string', 'enum': ORDERTYPE_POSSIBILITIES},
                 'stoploss': {'type': 'string', 'enum': ORDERTYPE_POSSIBILITIES},
                 'stoploss_on_exchange': {'type': 'boolean'},
@@ -175,9 +219,6 @@ CONF_SCHEMA = {
         'experimental': {
             'type': 'object',
             'properties': {
-                'use_sell_signal': {'type': 'boolean'},
-                'sell_profit_only': {'type': 'boolean'},
-                'ignore_roi_if_buy_signal': {'type': 'boolean'},
                 'block_bad_exchanges': {'type': 'boolean'}
             }
         },
@@ -187,7 +228,21 @@ CONF_SCHEMA = {
                 'type': 'object',
                 'properties': {
                     'method': {'type': 'string', 'enum': AVAILABLE_PAIRLISTS},
-                    'config': {'type': 'object'}
+                },
+                'required': ['method'],
+            }
+        },
+        'protections': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'method': {'type': 'string', 'enum': AVAILABLE_PROTECTIONS},
+                    'stop_duration': {'type': 'number', 'minimum': 0.0},
+                    'stop_duration_candles': {'type': 'number', 'minimum': 0},
+                    'trade_limit': {'type': 'number', 'minimum': 1},
+                    'lookback_period': {'type': 'number', 'minimum': 1},
+                    'lookback_period_candles': {'type': 'number', 'minimum': 1},
                 },
                 'required': ['method'],
             }
@@ -198,8 +253,38 @@ CONF_SCHEMA = {
                 'enabled': {'type': 'boolean'},
                 'token': {'type': 'string'},
                 'chat_id': {'type': 'string'},
+                'balance_dust_level': {'type': 'number', 'minimum': 0.0},
+                'notification_settings': {
+                    'type': 'object',
+                    'default': {},
+                    'properties': {
+                        'status': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
+                        'warning': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
+                        'startup': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
+                        'buy': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
+                        'buy_cancel': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
+                        'buy_fill': {'type': 'string',
+                                     'enum': TELEGRAM_SETTING_OPTIONS,
+                                     'default': 'off'
+                                     },
+                        'sell': {
+                            'type': ['string', 'object'],
+                            'additionalProperties': {
+                                'type': 'string',
+                                'enum': TELEGRAM_SETTING_OPTIONS
+                            }
+                        },
+                        'sell_cancel': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
+                        'sell_fill': {
+                            'type': 'string',
+                            'enum': TELEGRAM_SETTING_OPTIONS,
+                            'default': 'off'
+                            },
+                    }
+                },
+                'reload': {'type': 'boolean'},
             },
-            'required': ['enabled', 'token', 'chat_id']
+            'required': ['enabled', 'token', 'chat_id'],
         },
         'webhook': {
             'type': 'object',
@@ -231,6 +316,8 @@ CONF_SCHEMA = {
             'required': ['enabled', 'listen_ip_address', 'listen_port', 'username', 'password']
         },
         'db_url': {'type': 'string'},
+        'export': {'type': 'string', 'enum': EXPORT_OPTIONS, 'default': 'trades'},
+        'disableparamexport': {'type': 'boolean'},
         'initial_state': {'type': 'string', 'enum': ['running', 'stopped']},
         'forcebuy_enable': {'type': 'boolean'},
         'disable_dataframe_checks': {'type': 'boolean'},
@@ -326,6 +413,16 @@ SCHEMA_TRADE_REQUIRED = [
     'dataformat_trades',
 ]
 
+SCHEMA_BACKTEST_REQUIRED = [
+    'exchange',
+    'max_open_trades',
+    'stake_currency',
+    'stake_amount',
+    'dry_run_wallet',
+    'dataformat_ohlcv',
+    'dataformat_trades',
+]
+
 SCHEMA_MINIMAL_REQUIRED = [
     'exchange',
     'dry_run',
@@ -335,11 +432,17 @@ SCHEMA_MINIMAL_REQUIRED = [
 
 CANCEL_REASON = {
     "TIMEOUT": "cancelled due to timeout",
-    "PARTIALLY_FILLED": "partially filled - keeping order open",
+    "PARTIALLY_FILLED_KEEP_OPEN": "partially filled - keeping order open",
+    "PARTIALLY_FILLED": "partially filled",
+    "FULLY_CANCELLED": "fully cancelled",
     "ALL_CANCELLED": "cancelled (all unfilled and partially filled open orders cancelled)",
     "CANCELLED_ON_EXCHANGE": "cancelled on exchange",
+    "FORCE_SELL": "forcesold",
 }
 
 # List of pairs with their timeframes
 PairWithTimeframe = Tuple[str, str]
 ListPairsWithTimeframes = List[PairWithTimeframe]
+
+# Type for trades list
+TradeList = List[List]

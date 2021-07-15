@@ -4,11 +4,11 @@ from typing import Dict
 
 import ccxt
 
-from freqtrade.exceptions import (DDosProtection, ExchangeError,
-                                  InvalidOrderException, OperationalException,
-                                  TemporaryError)
+from freqtrade.exceptions import (DDosProtection, InsufficientFundsError, InvalidOrderException,
+                                  OperationalException, TemporaryError)
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.common import retrier
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,21 +18,11 @@ class Binance(Exchange):
     _ft_has: Dict = {
         "stoploss_on_exchange": True,
         "order_time_in_force": ['gtc', 'fok', 'ioc'],
+        "ohlcv_candle_limit": 1000,
         "trades_pagination": "id",
         "trades_pagination_arg": "fromId",
+        "l2_limit_range": [5, 10, 20, 50, 100, 500, 1000],
     }
-
-    def fetch_l2_order_book(self, pair: str, limit: int = 100) -> dict:
-        """
-        get order book level 2 from exchange
-
-        20180619: binance support limits but only on specific range
-        """
-        limit_range = [5, 10, 20, 50, 100, 500, 1000]
-        # get next-higher step in the limit_range list
-        limit = min(list(filter(lambda x: limit <= x, limit_range)))
-
-        return super().fetch_l2_order_book(pair, limit)
 
     def stoploss_adjust(self, stop_loss: float, order: Dict) -> bool:
         """
@@ -62,7 +52,7 @@ class Binance(Exchange):
                 'In stoploss limit order, stop price should be more than limit price')
 
         if self._config['dry_run']:
-            dry_order = self.dry_run_order(
+            dry_order = self.create_dry_run_order(
                 pair, ordertype, "sell", amount, stop_price)
             return dry_order
 
@@ -78,9 +68,10 @@ class Binance(Exchange):
                                            amount=amount, price=rate, params=params)
             logger.info('stoploss limit order added for %s. '
                         'stop price: %s. limit: %s', pair, stop_price, rate)
+            self._log_exchange_response('create_stoploss_order', order)
             return order
         except ccxt.InsufficientFunds as e:
-            raise ExchangeError(
+            raise InsufficientFundsError(
                 f'Insufficient funds to create {ordertype} sell order on market {pair}. '
                 f'Tried to sell amount {amount} at rate {rate}. '
                 f'Message: {e}') from e

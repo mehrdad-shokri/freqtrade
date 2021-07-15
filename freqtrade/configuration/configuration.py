@@ -10,13 +10,13 @@ from typing import Any, Callable, Dict, List, Optional
 from freqtrade import constants
 from freqtrade.configuration.check_exchange import check_exchange
 from freqtrade.configuration.deprecated_settings import process_temporary_deprecated_settings
-from freqtrade.configuration.directory_operations import (create_datadir,
-                                                          create_userdata_dir)
-from freqtrade.configuration.load_config import load_config_file
+from freqtrade.configuration.directory_operations import create_datadir, create_userdata_dir
+from freqtrade.configuration.load_config import load_config_file, load_file
+from freqtrade.enums import NON_UTIL_MODES, TRADING_MODES, RunMode
 from freqtrade.exceptions import OperationalException
 from freqtrade.loggers import setup_logging
-from freqtrade.misc import deep_merge_dicts, json_load
-from freqtrade.state import NON_UTIL_MODES, TRADING_MODES, RunMode
+from freqtrade.misc import deep_merge_dicts, parse_db_uri_for_logging
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class Configuration:
         :param files: List of file paths
         :return: configuration dictionary
         """
-        c = Configuration({"config": files}, RunMode.OTHER)
+        c = Configuration({'config': files}, RunMode.OTHER)
         return c.get_config()
 
     def load_from_files(self, files: List[str]) -> Dict[str, Any]:
@@ -75,8 +75,6 @@ class Configuration:
         # Normalize config
         if 'internals' not in config:
             config['internals'] = {}
-        # TODO: This can be deleted along with removal of deprecated
-        # experimental settings
         if 'ask_strategy' not in config:
             config['ask_strategy'] = {}
 
@@ -108,6 +106,8 @@ class Configuration:
 
         self._process_plot_options(config)
 
+        self._process_data_options(config)
+
         # Check if the exchange set by the user is supported
         check_exchange(config, config.get('experimental', {}).get('block_bad_exchanges', True))
 
@@ -123,10 +123,10 @@ class Configuration:
         the -v/--verbose, --logfile options
         """
         # Log level
-        config.update({'verbosity': self.args.get("verbosity", 0)})
+        config.update({'verbosity': self.args.get('verbosity', 0)})
 
-        if 'logfile' in self.args and self.args["logfile"]:
-            config.update({'logfile': self.args["logfile"]})
+        if 'logfile' in self.args and self.args['logfile']:
+            config.update({'logfile': self.args['logfile']})
 
         setup_logging(config)
 
@@ -144,27 +144,27 @@ class Configuration:
                 config['db_url'] = constants.DEFAULT_DB_PROD_URL
             logger.info('Dry run is disabled')
 
-        logger.info(f'Using DB: "{config["db_url"]}"')
+        logger.info(f'Using DB: "{parse_db_uri_for_logging(config["db_url"])}"')
 
     def _process_common_options(self, config: Dict[str, Any]) -> None:
 
         # Set strategy if not specified in config and or if it's non default
-        if self.args.get("strategy") or not config.get('strategy'):
-            config.update({'strategy': self.args.get("strategy")})
+        if self.args.get('strategy') or not config.get('strategy'):
+            config.update({'strategy': self.args.get('strategy')})
 
         self._args_to_config(config, argname='strategy_path',
                              logstring='Using additional Strategy lookup path: {}')
 
-        if ('db_url' in self.args and self.args["db_url"] and
-                self.args["db_url"] != constants.DEFAULT_DB_PROD_URL):
-            config.update({'db_url': self.args["db_url"]})
+        if ('db_url' in self.args and self.args['db_url'] and
+                self.args['db_url'] != constants.DEFAULT_DB_PROD_URL):
+            config.update({'db_url': self.args['db_url']})
             logger.info('Parameter --db-url detected ...')
 
         if config.get('forcebuy_enable', False):
             logger.warning('`forcebuy` RPC message enabled.')
 
         # Support for sd_notify
-        if 'sd_notify' in self.args and self.args["sd_notify"]:
+        if 'sd_notify' in self.args and self.args['sd_notify']:
             config['internals'].update({'sd_notify': True})
 
     def _process_datadir_options(self, config: Dict[str, Any]) -> None:
@@ -173,24 +173,24 @@ class Configuration:
         --user-data, --datadir
         """
         # Check exchange parameter here - otherwise `datadir` might be wrong.
-        if "exchange" in self.args and self.args["exchange"]:
-            config['exchange']['name'] = self.args["exchange"]
+        if 'exchange' in self.args and self.args['exchange']:
+            config['exchange']['name'] = self.args['exchange']
             logger.info(f"Using exchange {config['exchange']['name']}")
 
         if 'pair_whitelist' not in config['exchange']:
             config['exchange']['pair_whitelist'] = []
 
-        if 'user_data_dir' in self.args and self.args["user_data_dir"]:
-            config.update({'user_data_dir': self.args["user_data_dir"]})
+        if 'user_data_dir' in self.args and self.args['user_data_dir']:
+            config.update({'user_data_dir': self.args['user_data_dir']})
         elif 'user_data_dir' not in config:
             # Default to cwd/user_data (legacy option ...)
-            config.update({'user_data_dir': str(Path.cwd() / "user_data")})
+            config.update({'user_data_dir': str(Path.cwd() / 'user_data')})
 
         # reset to user_data_dir so this contains the absolute path.
         config['user_data_dir'] = create_userdata_dir(config['user_data_dir'], create_dir=False)
         logger.info('Using user-data directory: %s ...', config['user_data_dir'])
 
-        config.update({'datadir': create_datadir(config, self.args.get("datadir", None))})
+        config.update({'datadir': create_datadir(config, self.args.get('datadir', None))})
         logger.info('Using data directory: %s ...', config.get('datadir'))
 
         if self.args.get('exportfilename'):
@@ -199,7 +199,7 @@ class Configuration:
             config['exportfilename'] = Path(config['exportfilename'])
         else:
             config['exportfilename'] = (config['user_data_dir']
-                                        / 'backtest_results/backtest-result.json')
+                                        / 'backtest_results')
 
     def _process_optimize_options(self, config: Dict[str, Any]) -> None:
 
@@ -211,25 +211,37 @@ class Configuration:
         self._args_to_config(config, argname='position_stacking',
                              logstring='Parameter --enable-position-stacking detected ...')
 
-        # Setting max_open_trades to infinite if -1
-        if config.get('max_open_trades') == -1:
-            config['max_open_trades'] = float('inf')
+        self._args_to_config(
+            config, argname='enable_protections',
+            logstring='Parameter --enable-protections detected, enabling Protections. ...')
 
         if 'use_max_market_positions' in self.args and not self.args["use_max_market_positions"]:
             config.update({'use_max_market_positions': False})
             logger.info('Parameter --disable-max-market-positions detected ...')
             logger.info('max_open_trades set to unlimited ...')
-        elif 'max_open_trades' in self.args and self.args["max_open_trades"]:
-            config.update({'max_open_trades': self.args["max_open_trades"]})
+        elif 'max_open_trades' in self.args and self.args['max_open_trades']:
+            config.update({'max_open_trades': self.args['max_open_trades']})
             logger.info('Parameter --max-open-trades detected, '
                         'overriding max_open_trades to: %s ...', config.get('max_open_trades'))
         elif config['runmode'] in NON_UTIL_MODES:
             logger.info('Using max_open_trades: %s ...', config.get('max_open_trades'))
+        # Setting max_open_trades to infinite if -1
+        if config.get('max_open_trades') == -1:
+            config['max_open_trades'] = float('inf')
+
+        if self.args.get('stake_amount', None):
+            # Convert explicitly to float to support CLI argument for both unlimited and value
+            try:
+                self.args['stake_amount'] = float(self.args['stake_amount'])
+            except ValueError:
+                pass
 
         self._args_to_config(config, argname='stake_amount',
                              logstring='Parameter --stake-amount detected, '
                              'overriding stake_amount to: {} ...')
-
+        self._args_to_config(config, argname='dry_run_wallet',
+                             logstring='Parameter --dry-run-wallet detected, '
+                             'overriding dry_run_wallet to: {} ...')
         self._args_to_config(config, argname='fee',
                              logstring='Parameter --fee detected, '
                              'setting fee to: {} ...')
@@ -248,6 +260,8 @@ class Configuration:
         self._args_to_config(config, argname='export',
                              logstring='Parameter --export detected: {} ...')
 
+        self._args_to_config(config, argname='disableparamexport',
+                             logstring='Parameter --disableparamexport detected: {} ...')
         # Edge section:
         if 'stoploss_range' in self.args and self.args["stoploss_range"]:
             txt_range = eval(self.args["stoploss_range"])
@@ -262,6 +276,9 @@ class Configuration:
 
         self._args_to_config(config, argname='hyperopt_path',
                              logstring='Using additional Hyperopt lookup path: {}')
+
+        self._args_to_config(config, argname='hyperoptexportfilename',
+                             logstring='Using hyperopt file: {}')
 
         self._args_to_config(config, argname='epochs',
                              logstring='Parameter --epochs detected ... '
@@ -294,9 +311,6 @@ class Configuration:
 
         self._args_to_config(config, argname='hyperopt_min_trades',
                              logstring='Parameter --min-trades detected: {}')
-
-        self._args_to_config(config, argname='hyperopt_continue',
-                             logstring='Hyperopt continue: {}')
 
         self._args_to_config(config, argname='hyperopt_loss',
                              logstring='Using Hyperopt loss class name: {}')
@@ -363,6 +377,9 @@ class Configuration:
         self._args_to_config(config, argname='plot_limit',
                              logstring='Limiting plot to: {}')
 
+        self._args_to_config(config, argname='plot_auto_open',
+                             logstring='Parameter --auto-open detected.')
+
         self._args_to_config(config, argname='trade_source',
                              logstring='Using trades from: {}')
 
@@ -386,6 +403,11 @@ class Configuration:
 
         self._args_to_config(config, argname='dataformat_trades',
                              logstring='Using "{}" to store trades data.')
+
+    def _process_data_options(self, config: Dict[str, Any]) -> None:
+
+        self._args_to_config(config, argname='new_pairs_days',
+                             logstring='Detected --new-pairs-days: {}')
 
     def _process_runmode(self, config: Dict[str, Any]) -> None:
 
@@ -433,28 +455,27 @@ class Configuration:
         """
 
         if "pairs" in config:
+            config['exchange']['pair_whitelist'] = config['pairs']
             return
 
         if "pairs_file" in self.args and self.args["pairs_file"]:
             pairs_file = Path(self.args["pairs_file"])
             logger.info(f'Reading pairs file "{pairs_file}".')
             # Download pairs from the pairs file if no config is specified
-            # or if pairs file is specified explicitely
+            # or if pairs file is specified explicitly
             if not pairs_file.exists():
                 raise OperationalException(f'No pairs file found with path "{pairs_file}".')
-            with pairs_file.open('r') as f:
-                config['pairs'] = json_load(f)
-                config['pairs'].sort()
+            config['pairs'] = load_file(pairs_file)
+            config['pairs'].sort()
             return
 
-        if "config" in self.args and self.args["config"]:
+        if 'config' in self.args and self.args['config']:
             logger.info("Using pairlist from configuration.")
             config['pairs'] = config.get('exchange', {}).get('pair_whitelist')
         else:
             # Fall back to /dl_path/pairs.json
-            pairs_file = config['datadir'] / "pairs.json"
+            pairs_file = config['datadir'] / 'pairs.json'
             if pairs_file.exists():
-                with pairs_file.open('r') as f:
-                    config['pairs'] = json_load(f)
+                config['pairs'] = load_file(pairs_file)
                 if 'pairs' in config:
                     config['pairs'].sort()

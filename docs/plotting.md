@@ -37,7 +37,7 @@ usage: freqtrade plot-dataframe [-h] [-v] [--logfile FILE] [-V] [-c PATH]
 optional arguments:
   -h, --help            show this help message and exit
   -p PAIRS [PAIRS ...], --pairs PAIRS [PAIRS ...]
-                        Show profits for only these pairs. Pairs are space-
+                        Limit command to these pairs. Pairs are space-
                         separated.
   --indicators1 INDICATORS1 [INDICATORS1 ...]
                         Set indicators from your strategy you want in the
@@ -66,8 +66,7 @@ optional arguments:
   --timerange TIMERANGE
                         Specify what timerange of data to use.
   -i TIMEFRAME, --timeframe TIMEFRAME, --ticker-interval TIMEFRAME
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
+                        Specify timeframe (`1m`, `5m`, `30m`, `1h`, `1d`).
   --no-trades           Skip using trades from backtesting file and DB.
 
 Common arguments:
@@ -91,6 +90,7 @@ Strategy arguments:
                         Specify strategy class name which will be used by the
                         bot.
   --strategy-path PATH  Specify additional strategy lookup path.
+
 ```
 
 Example:
@@ -168,9 +168,16 @@ Additional features when using plot_config include:
 
 * Specify colors per indicator
 * Specify additional subplots
+* Specify indicator pairs to fill area in between 
 
-The sample plot configuration below specifies fixed colors for the indicators. Otherwise consecutive plots may produce different colorschemes each time, making comparisons difficult.
+The sample plot configuration below specifies fixed colors for the indicators. Otherwise, consecutive plots may produce different color schemes each time, making comparisons difficult.
 It also allows multiple subplots to display both MACD and RSI at the same time.
+
+Plot type can be configured using `type` key. Possible types are:
+* `scatter` corresponding to `plotly.graph_objects.Scatter` class (default).
+* `bar` corresponding to `plotly.graph_objects.Bar` class.
+
+Extra parameters to `plotly.graph_objects.*` constructor can be specified in `plotly` dict.
 
 Sample configuration with inline comments explaining the process:
 
@@ -183,23 +190,38 @@ Sample configuration with inline comments explaining the process:
             'ema50': {'color': '#CCCCCC'},
             # By omitting color, a random color is selected.
             'sar': {},
+	    # fill area between senkou_a and senkou_b
+	    'senkou_a': {
+	        'color': 'green', #optional
+	        'fill_to': 'senkou_b',
+	        'fill_label': 'Ichimoku Cloud', #optional
+	        'fill_color': 'rgba(255,76,46,0.2)', #optional
+	    },
+	    # plot senkou_b, too. Not only the area to it.
+	    'senkou_b': {}
         },
         'subplots': {
             # Create subplot MACD
             "MACD": {
-                'macd': {'color': 'blue'},
+                'macd': {'color': 'blue', 'fill_to': 'macdhist'},
                 'macdsignal': {'color': 'orange'},
+                'macdhist': {'type': 'bar', 'plotly': {'opacity': 0.9}}
             },
             # Additional subplot RSI
             "RSI": {
-                'rsi': {'color': 'red'},
+                'rsi': {'color': 'red'}
             }
         }
     }
+
 ```
 
 !!! Note
-    The above configuration assumes that `ema10`, `ema50`, `macd`, `macdsignal` and `rsi` are columns in the DataFrame created by the strategy.
+    The above configuration assumes that `ema10`, `ema50`, `senkou_a`, `senkou_b`,
+    `macd`, `macdsignal`, `macdhist` and `rsi` are columns in the DataFrame created by the strategy.
+
+!!! Warning
+    `plotly` arguments are only supported with plotly library and will not work with freq-ui.
 
 ## Plot profit
 
@@ -224,7 +246,8 @@ Possible options for the `freqtrade plot-profit` subcommand:
 
 ```
 usage: freqtrade plot-profit [-h] [-v] [--logfile FILE] [-V] [-c PATH]
-                             [-d PATH] [--userdir PATH] [-p PAIRS [PAIRS ...]]
+                             [-d PATH] [--userdir PATH] [-s NAME]
+                             [--strategy-path PATH] [-p PAIRS [PAIRS ...]]
                              [--timerange TIMERANGE] [--export EXPORT]
                              [--export-filename PATH] [--db-url PATH]
                              [--trade-source {DB,file}] [-i TIMEFRAME]
@@ -232,7 +255,7 @@ usage: freqtrade plot-profit [-h] [-v] [--logfile FILE] [-V] [-c PATH]
 optional arguments:
   -h, --help            show this help message and exit
   -p PAIRS [PAIRS ...], --pairs PAIRS [PAIRS ...]
-                        Show profits for only these pairs. Pairs are space-
+                        Limit command to these pairs. Pairs are space-
                         separated.
   --timerange TIMERANGE
                         Specify what timerange of data to use.
@@ -251,8 +274,8 @@ optional arguments:
                         Specify the source for trades (Can be DB or file
                         (backtest file)) Default: file
   -i TIMEFRAME, --timeframe TIMEFRAME, --ticker-interval TIMEFRAME
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
+                        Specify timeframe (`1m`, `5m`, `30m`, `1h`, `1d`).
+  --auto-open           Automatically open generated plot.
 
 Common arguments:
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
@@ -270,6 +293,12 @@ Common arguments:
   --userdir PATH, --user-data-dir PATH
                         Path to userdata directory.
 
+Strategy arguments:
+  -s NAME, --strategy NAME
+                        Specify strategy class name which will be used by the
+                        bot.
+  --strategy-path PATH  Specify additional strategy lookup path.
+
 ```
 
 The `-p/--pairs`  argument, can be used to limit the pairs that are considered for this calculation.
@@ -279,7 +308,7 @@ Examples:
 Use custom backtest-export file
 
 ``` bash
-freqtrade plot-profit  -p LTC/BTC --export-filename user_data/backtest_results/backtest-result-Strategy005.json
+freqtrade plot-profit  -p LTC/BTC --export-filename user_data/backtest_results/backtest-result.json
 ```
 
 Use custom database

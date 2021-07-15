@@ -10,8 +10,8 @@ from typing import Any, Dict, List
 import pandas as pd
 from pandas import DataFrame, to_datetime
 
-from freqtrade.constants import (DEFAULT_DATAFRAME_COLUMNS,
-                                 DEFAULT_TRADES_COLUMNS)
+from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, DEFAULT_TRADES_COLUMNS, TradeList
+
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def clean_ohlcv_dataframe(data: DataFrame, timeframe: str, pair: str, *,
                           fill_missing: bool = True,
                           drop_incomplete: bool = True) -> DataFrame:
     """
-    Clense a OHLCV dataframe by
+    Cleanse a OHLCV dataframe by
       * Grouping it by date (removes duplicate tics)
       * dropping last candles if requested
       * Filling up missing data (if requested)
@@ -110,26 +110,60 @@ def ohlcv_fill_up_missing_data(dataframe: DataFrame, timeframe: str, pair: str) 
     df.reset_index(inplace=True)
     len_before = len(dataframe)
     len_after = len(df)
+    pct_missing = (len_after - len_before) / len_before if len_before > 0 else 0
     if len_before != len_after:
-        logger.info(f"Missing data fillup for {pair}: before: {len_before} - after: {len_after}")
+        message = (f"Missing data fillup for {pair}: before: {len_before} - after: {len_after}"
+                   f" - {round(pct_missing * 100, 2)}%")
+        if pct_missing > 0.01:
+            logger.info(message)
+        else:
+            # Don't be verbose if only a small amount is missing
+            logger.debug(message)
     return df
 
 
-def trim_dataframe(df: DataFrame, timerange, df_date_col: str = 'date') -> DataFrame:
+def trim_dataframe(df: DataFrame, timerange, df_date_col: str = 'date',
+                   startup_candles: int = 0) -> DataFrame:
     """
     Trim dataframe based on given timerange
     :param df: Dataframe to trim
     :param timerange: timerange (use start and end date if available)
-    :param: df_date_col: Column in the dataframe to use as Date column
+    :param df_date_col: Column in the dataframe to use as Date column
+    :param startup_candles: When not 0, is used instead the timerange start date
     :return: trimmed dataframe
     """
-    if timerange.starttype == 'date':
-        start = datetime.fromtimestamp(timerange.startts, tz=timezone.utc)
-        df = df.loc[df[df_date_col] >= start, :]
+    if startup_candles:
+        # Trim candles instead of timeframe in case of given startup_candle count
+        df = df.iloc[startup_candles:, :]
+    else:
+        if timerange.starttype == 'date':
+            start = datetime.fromtimestamp(timerange.startts, tz=timezone.utc)
+            df = df.loc[df[df_date_col] >= start, :]
     if timerange.stoptype == 'date':
         stop = datetime.fromtimestamp(timerange.stopts, tz=timezone.utc)
         df = df.loc[df[df_date_col] <= stop, :]
     return df
+
+
+def trim_dataframes(preprocessed: Dict[str, DataFrame], timerange,
+                    startup_candles: int) -> Dict[str, DataFrame]:
+    """
+    Trim startup period from analyzed dataframes
+    :param preprocessed: Dict of pair: dataframe
+    :param timerange: timerange (use start and end date if available)
+    :param startup_candles: Startup-candles that should be removed
+    :return: Dict of trimmed dataframes
+    """
+    processed: Dict[str, DataFrame] = {}
+
+    for pair, df in preprocessed.items():
+        trimed_df = trim_dataframe(df, timerange, startup_candles=startup_candles)
+        if not trimed_df.empty:
+            processed[pair] = trimed_df
+        else:
+            logger.warning(f'{pair} has no data left after adjusting for startup candles, '
+                           f'skipping.')
+    return processed
 
 
 def order_book_to_dataframe(bids: list, asks: list) -> DataFrame:
@@ -168,7 +202,7 @@ def trades_remove_duplicates(trades: List[List]) -> List[List]:
     return [i for i, _ in itertools.groupby(sorted(trades, key=itemgetter(0)))]
 
 
-def trades_dict_to_list(trades: List[Dict]) -> List[List]:
+def trades_dict_to_list(trades: List[Dict]) -> TradeList:
     """
     Convert fetch_trades result into a List (to be more memory efficient).
     :param trades: List of trades, as returned by ccxt.fetch_trades.
@@ -177,16 +211,18 @@ def trades_dict_to_list(trades: List[Dict]) -> List[List]:
     return [[t[col] for col in DEFAULT_TRADES_COLUMNS] for t in trades]
 
 
-def trades_to_ohlcv(trades: List, timeframe: str) -> DataFrame:
+def trades_to_ohlcv(trades: TradeList, timeframe: str) -> DataFrame:
     """
     Converts trades list to OHLCV list
-    TODO: This should get a dedicated test
     :param trades: List of trades, as returned by ccxt.fetch_trades.
     :param timeframe: Timeframe to resample data to
     :return: OHLCV Dataframe.
+    :raises: ValueError if no trades are provided
     """
     from freqtrade.exchange import timeframe_to_minutes
     timeframe_minutes = timeframe_to_minutes(timeframe)
+    if not trades:
+        raise ValueError('Trade-list empty.')
     df = pd.DataFrame(trades, columns=DEFAULT_TRADES_COLUMNS)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms',
                                      utc=True,)
@@ -255,7 +291,8 @@ def convert_ohlcv_format(config: Dict[str, Any], convert_from: str, convert_to: 
                                   drop_incomplete=False,
                                   startup_candles=0)
             logger.info(f"Converting {len(data)} candles for {pair}")
-            trg.ohlcv_store(pair=pair, timeframe=timeframe, data=data)
-            if erase and convert_from != convert_to:
-                logger.info(f"Deleting source data for {pair} / {timeframe}")
-                src.ohlcv_purge(pair=pair, timeframe=timeframe)
+            if len(data) > 0:
+                trg.ohlcv_store(pair=pair, timeframe=timeframe, data=data)
+                if erase and convert_from != convert_to:
+                    logger.info(f"Deleting source data for {pair} / {timeframe}")
+                    src.ohlcv_purge(pair=pair, timeframe=timeframe)

@@ -7,11 +7,11 @@ import logging
 from typing import Any, Dict
 
 from freqtrade import constants
-from freqtrade.configuration import (TimeRange, remove_credentials,
-                                     validate_config_consistency)
+from freqtrade.configuration import TimeRange, remove_credentials, validate_config_consistency
 from freqtrade.edge import Edge
 from freqtrade.optimize.optimize_reports import generate_edge_table
 from freqtrade.resolvers import ExchangeResolver, StrategyResolver
+
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class EdgeCli:
             'timerange') is None else str(self.config.get('timerange')))
 
     def start(self) -> None:
-        result = self.edge.calculate()
+        result = self.edge.calculate(self.config['exchange']['pair_whitelist'])
         if result:
             print('')  # blank line for readability
             print(generate_edge_table(self.edge._cached_pairs))

@@ -3,9 +3,10 @@ This module loads custom exchanges
 """
 import logging
 
-from freqtrade.exchange import Exchange, MAP_EXCHANGE_CHILDCLASS
 import freqtrade.exchange as exchanges
+from freqtrade.exchange import MAP_EXCHANGE_CHILDCLASS, Exchange
 from freqtrade.resolvers import IResolver
+
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class ExchangeResolver(IResolver):
     def load_exchange(exchange_name: str, config: dict, validate: bool = True) -> Exchange:
         """
         Load the custom class from config parameter
+        :param exchange_name: name of the Exchange to load
         :param config: configuration dictionary
         """
         # Map exchange name to avoid duplicate classes for identical exchanges

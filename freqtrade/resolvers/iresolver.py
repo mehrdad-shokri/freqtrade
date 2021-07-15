@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Type, Union
 
 from freqtrade.exceptions import OperationalException
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,30 +51,36 @@ class IResolver:
         :param object_name: Class name of the object
         :param enum_failed: If True, will return None for modules which fail.
             Otherwise, failing modules are skipped.
-        :return: generator containing matching objects
+        :return: generator containing tuple of matching objects
+             Tuple format: [Object, source]
         """
 
         # Generate spec based on absolute path
         # Pass object_name as first argument to have logging print a reasonable name.
         spec = importlib.util.spec_from_file_location(object_name or "", str(module_path))
+        if not spec:
+            return iter([None])
+
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)  # type: ignore # importlib does not use typehints
-        except (ModuleNotFoundError, SyntaxError) as err:
+        except (ModuleNotFoundError, SyntaxError, ImportError, NameError) as err:
             # Catch errors in case a specific module is not installed
             logger.warning(f"Could not import {module_path} due to '{err}'")
             if enum_failed:
                 return iter([None])
 
         valid_objects_gen = (
-            obj for name, obj in inspect.getmembers(module, inspect.isclass)
-            if ((object_name is None or object_name == name) and
-                issubclass(obj, cls.object_type) and obj is not cls.object_type)
+            (obj, inspect.getsource(module)) for
+            name, obj in inspect.getmembers(
+                module, inspect.isclass) if ((object_name is None or object_name == name)
+                                             and issubclass(obj, cls.object_type)
+                                             and obj is not cls.object_type)
         )
         return valid_objects_gen
 
     @classmethod
-    def _search_object(cls, directory: Path, object_name: str
+    def _search_object(cls, directory: Path, *, object_name: str, add_source: bool = False
                        ) -> Union[Tuple[Any, Path], Tuple[None, None]]:
         """
         Search for the objectname in the given directory
@@ -87,16 +94,22 @@ class IResolver:
             if not str(entry).endswith('.py'):
                 logger.debug('Ignoring %s', entry)
                 continue
+            if entry.is_symlink() and not entry.is_file():
+                logger.debug('Ignoring broken symlink %s', entry)
+                continue
             module_path = entry.resolve()
 
             obj = next(cls._get_valid_object(module_path, object_name), None)
 
             if obj:
-                return (obj, module_path)
+                obj[0].__file__ = str(entry)
+                if add_source:
+                    obj[0].__source__ = obj[1]
+                return (obj[0], module_path)
         return (None, None)
 
     @classmethod
-    def _load_object(cls, paths: List[Path], object_name: str,
+    def _load_object(cls, paths: List[Path], *, object_name: str, add_source: bool = False,
                      kwargs: dict = {}) -> Optional[Any]:
         """
         Try to load object from path list.
@@ -105,7 +118,8 @@ class IResolver:
         for _path in paths:
             try:
                 (module, module_path) = cls._search_object(directory=_path,
-                                                           object_name=object_name)
+                                                           object_name=object_name,
+                                                           add_source=add_source)
                 if module:
                     logger.info(
                         f"Using resolved {cls.object_type.__name__.lower()[1:]} {object_name} "
@@ -117,11 +131,11 @@ class IResolver:
         return None
 
     @classmethod
-    def load_object(cls, object_name: str, config: dict, kwargs: dict,
+    def load_object(cls, object_name: str, config: dict, *, kwargs: dict,
                     extra_dir: Optional[str] = None) -> Any:
         """
         Search and loads the specified object as configured in hte child class.
-        :param objectname: name of the module to import
+        :param object_name: name of the module to import
         :param config: configuration dictionary
         :param extra_dir: additional directory to search for the given pairlist
         :raises: OperationalException if the class is invalid or does not exist.
@@ -132,10 +146,10 @@ class IResolver:
                                            user_subdir=cls.user_subdir,
                                            extra_dir=extra_dir)
 
-        pairlist = cls._load_object(paths=abs_paths, object_name=object_name,
-                                    kwargs=kwargs)
-        if pairlist:
-            return pairlist
+        found_object = cls._load_object(paths=abs_paths, object_name=object_name,
+                                        kwargs=kwargs)
+        if found_object:
+            return found_object
         raise OperationalException(
             f"Impossible to load {cls.object_type_str} '{object_name}'. This class does not exist "
             "or contains Python code errors."
@@ -149,7 +163,7 @@ class IResolver:
         :param directory: Path to search
         :param enum_failed: If True, will return None for modules which fail.
             Otherwise, failing modules are skipped.
-        :return: List of dicts containing 'name', 'class' and 'location' entires
+        :return: List of dicts containing 'name', 'class' and 'location' entries
         """
         logger.debug(f"Searching for {cls.object_type.__name__} '{directory}'")
         objects = []
@@ -163,8 +177,8 @@ class IResolver:
             for obj in cls._get_valid_object(module_path, object_name=None,
                                              enum_failed=enum_failed):
                 objects.append(
-                    {'name': obj.__name__ if obj is not None else '',
-                     'class': obj,
+                    {'name': obj[0].__name__ if obj is not None else '',
+                     'class': obj[0] if obj is not None else None,
                      'location': entry,
                      })
         return objects

@@ -8,11 +8,11 @@ from pandas import DataFrame, read_json, to_datetime
 
 from freqtrade import misc
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import (DEFAULT_DATAFRAME_COLUMNS,
-                                 ListPairsWithTimeframes)
+from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, ListPairsWithTimeframes, TradeList
 from freqtrade.data.converter import trades_dict_to_list
 
-from .idatahandler import IDataHandler, TradeList
+from .idatahandler import IDataHandler
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,8 @@ class JsonDataHandler(IDataHandler):
             format looks as follows:
             [[<date>,<open>,<high>,<low>,<close>]]
         :param pair: Pair - used to generate filename
-        :timeframe: Timeframe - used to generate filename
-        :data: Dataframe containing OHLCV data
+        :param timeframe: Timeframe - used to generate filename
+        :param data: Dataframe containing OHLCV data
         :return: None
         """
         filename = self._pair_data_filename(self._datadir, pair, timeframe)
@@ -86,8 +86,12 @@ class JsonDataHandler(IDataHandler):
         filename = self._pair_data_filename(self._datadir, pair, timeframe)
         if not filename.exists():
             return DataFrame(columns=self._columns)
-        pairdata = read_json(filename, orient='values')
-        pairdata.columns = self._columns
+        try:
+            pairdata = read_json(filename, orient='values')
+            pairdata.columns = self._columns
+        except ValueError:
+            logger.error(f"Could not load data for {pair}.")
+            return DataFrame(columns=self._columns)
         pairdata = pairdata.astype(dtype={'open': 'float', 'high': 'float',
                                           'low': 'float', 'close': 'float', 'volume': 'float'})
         pairdata['date'] = to_datetime(pairdata['date'],

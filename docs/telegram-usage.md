@@ -35,11 +35,113 @@ Copy the API Token (`22222222:APITOKEN` in the above example) and keep use it fo
 
 Don't forget to start the conversation with your bot, by clicking `/START` button
 
-### 2. Get your user id
+### 2. Telegram user_id
+
+#### Get your user id
 
 Talk to the [userinfobot](https://telegram.me/userinfobot)
 
 Get your "Id", you will use it for the config parameter `chat_id`.
+
+#### Use Group id
+
+You can use bots in telegram groups by just adding them to the group. You can find the group id by first adding a [RawDataBot](https://telegram.me/rawdatabot) to your group. The Group id is shown as id in the `"chat"` section, which the RawDataBot will send to you:
+
+``` json
+"chat":{
+   "id":-1001332619709
+}
+```
+
+For the Freqtrade configuration, you can then use the the full value (including `-` if it's there) as string:
+
+```json
+   "chat_id": "-1001332619709"
+```
+
+## Control telegram noise
+
+Freqtrade provides means to control the verbosity of your telegram bot.
+Each setting has the following possible values:
+
+* `on` - Messages will be sent, and user will be notified.
+* `silent` - Message will be sent, Notification will be without sound / vibration.
+* `off` - Skip sending a message-type all together.
+
+Example configuration showing the different settings:
+
+``` json
+"telegram": {
+    "enabled": true,
+    "token": "your_telegram_token",
+    "chat_id": "your_telegram_chat_id",
+    "notification_settings": {
+        "status": "silent",
+        "warning": "on",
+        "startup": "off",
+        "buy": "silent",
+        "sell": {
+            "roi": "silent",
+            "emergency_sell": "on",
+            "force_sell": "on",
+            "sell_signal": "silent",
+            "trailing_stop_loss": "on",
+            "stop_loss": "on",
+            "stoploss_on_exchange": "on",
+            "custom_sell": "silent"
+        },
+        "buy_cancel": "silent",
+        "sell_cancel": "on",
+        "buy_fill": "off",
+        "sell_fill": "off"
+    },
+    "reload": true,
+    "balance_dust_level": 0.01
+},
+```
+
+`buy` notifications are sent when the order is placed, while `buy_fill` notifications are sent when the order is filled on the exchange.
+`sell` notifications are sent when the order is placed, while `sell_fill` notifications are sent when the order is filled on the exchange.
+`*_fill` notifications are off by default and must be explicitly enabled.
+
+
+`balance_dust_level` will define what the `/balance` command takes as "dust" - Currencies with a balance below this will be shown.
+`reload` allows you to disable reload-buttons on selected messages.
+
+## Create a custom keyboard (command shortcut buttons)
+
+Telegram allows us to create a custom keyboard with buttons for commands.
+The default custom keyboard looks like this.
+
+```python
+[
+    ["/daily", "/profit", "/balance"], # row 1, 3 commands
+    ["/status", "/status table", "/performance"], # row 2, 3 commands
+    ["/count", "/start", "/stop", "/help"] # row 3, 4 commands
+]
+```
+
+### Usage
+
+You can create your own keyboard in `config.json`:
+
+``` json
+"telegram": {
+      "enabled": true,
+      "token": "your_telegram_token",
+      "chat_id": "your_telegram_chat_id",
+      "keyboard": [   
+          ["/daily", "/stats", "/balance", "/profit"],
+          ["/status table", "/performance"],
+          ["/reload_config", "/count", "/logs"]
+      ]
+   },
+```
+
+!!! Note "Supported Commands"
+    Only the following commands are allowed. Command arguments are not supported!
+
+    `/start`, `/stop`, `/status`, `/status table`, `/trades`, `/profit`, `/performance`, `/daily`, `/stats`, `/count`, `/locks`, `/balance`, `/stopbuy`, `/reload_config`, `/show_config`, `/logs`, `/whitelist`, `/blacklist`, `/edge`, `/help`, `/version`
 
 ## Telegram commands
 
@@ -54,18 +156,23 @@ official commands. You can ask at any moment for help with `/help`.
 | `/stopbuy` | Stops the trader from opening new trades. Gracefully closes open trades according to their rules.
 | `/reload_config` | Reloads the configuration file
 | `/show_config` | Shows part of the current configuration with relevant settings to operation
+| `/logs [limit]` | Show last log messages.
 | `/status` | Lists all open trades
+| `/status <trade_id>` | Lists one or more specific trade. Separate multiple <trade_id> with a blank space.
 | `/status table` | List all open trades in a table format. Pending buy orders are marked with an asterisk (*) Pending sell orders are marked with a double asterisk (**)
 | `/trades [limit]` | List all recently closed trades in a table format.
 | `/delete <trade_id>` | Delete a specific trade from the Database. Tries to close open orders. Requires manual handling of this trade on the exchange.
 | `/count` | Displays number of trades used and available
-| `/profit` | Display a summary of your profit/loss from close trades and some stats about your performance
+| `/locks` | Show currently locked pairs.
+| `/unlock <pair or lock_id>` | Remove the lock for this pair (or for this lock id).
+| `/profit [<n>]` | Display a summary of your profit/loss from close trades and some stats about your performance, over the last n days (all trades by default)
 | `/forcesell <trade_id>` | Instantly sells the given trade  (Ignoring `minimum_roi`).
 | `/forcesell all` | Instantly sells all open trades (Ignoring `minimum_roi`).
 | `/forcebuy <pair> [rate]` | Instantly buys the given pair. Rate is optional. (`forcebuy_enable` must be set to True)
 | `/performance` | Show performance of each finished trade grouped by pair
 | `/balance` | Show account balance per currency
 | `/daily <n>` | Shows profit or loss per day, over the last n days (n defaults to 7)
+| `/stats` | Shows Wins / losses by Sell reason as well as Avg. holding durations for buys and sells
 | `/whitelist` | Show the current whitelist
 | `/blacklist [pair]` | Show the current blacklist, or adds a pair to the blacklist.
 | `/edge` | Show validated pairs by Edge if it is enabled.
@@ -154,23 +261,27 @@ Return a summary of your profit/loss and performance.
 
 > **BITTREX:** Selling BTC/LTC with limit `0.01650000 (profit: ~-4.07%, -0.00008168)`
 
-### /forcebuy <pair>
+### /forcebuy <pair> [rate]
 
 > **BITTREX:** Buying ETH/BTC with limit `0.03400000` (`1.000000 ETH`, `225.290 USD`)
 
+Omitting the pair will open a query asking for the pair to buy (based on the current whitelist).
+
+![Telegram force-buy screenshot](assets/telegram_forcebuy.png)
+
 Note that for this to work, `forcebuy_enable` needs to be set to true.
 
-[More details](configuration.md/#understand-forcebuy_enable)
+[More details](configuration.md#understand-forcebuy_enable)
 
 ### /performance
 
 Return the performance of each crypto-currency the bot has sold.
-> Performance:
-> 1. `RCN/BTC 57.77%`  
-> 2. `PAY/BTC 56.91%`  
-> 3. `VIB/BTC 47.07%`  
-> 4. `SALT/BTC 30.24%`  
-> 5. `STORJ/BTC 27.24%`  
+> Performance:  
+> 1. `RCN/BTC 0.003 BTC (57.77%) (1)`  
+> 2. `PAY/BTC 0.0012 BTC (56.91%) (1)`  
+> 3. `VIB/BTC 0.0011 BTC (47.07%) (1)`  
+> 4. `SALT/BTC 0.0010 BTC (30.24%) (1)`  
+> 5. `STORJ/BTC 0.0009 BTC (27.24%) (1)`  
 > ...  
 
 ### /balance

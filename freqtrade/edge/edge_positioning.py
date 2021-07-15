@@ -1,6 +1,8 @@
 # pragma pylint: disable=W0603
 """ Edge positioning package """
 import logging
+from collections import defaultdict
+from copy import deepcopy
 from typing import Any, Dict, List, NamedTuple
 
 import arrow
@@ -9,10 +11,14 @@ import utils_find_1st as utf1st
 from pandas import DataFrame
 
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import UNLIMITED_STAKE_AMOUNT
-from freqtrade.exceptions import OperationalException
+from freqtrade.constants import DATETIME_PRINT_FORMAT, UNLIMITED_STAKE_AMOUNT
 from freqtrade.data.history import get_timerange, load_data, refresh_data
-from freqtrade.strategy.interface import SellType
+from freqtrade.enums import RunMode, SellType
+from freqtrade.exceptions import OperationalException
+from freqtrade.exchange.exchange import timeframe_to_seconds
+from freqtrade.plugins.pairlist.pairlist_helpers import expand_pairlist
+from freqtrade.strategy.interface import IStrategy
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +49,7 @@ class Edge:
 
         self.config = config
         self.exchange = exchange
-        self.strategy = strategy
+        self.strategy: IStrategy = strategy
 
         self.edge_config = self.config.get('edge', {})
         self._cached_pairs: Dict[str, Any] = {}  # Keeps a list of pairs
@@ -79,14 +85,20 @@ class Edge:
         if config.get('fee'):
             self.fee = config['fee']
         else:
-            self.fee = self.exchange.get_fee(symbol=self.config['exchange']['pair_whitelist'][0])
+            try:
+                self.fee = self.exchange.get_fee(symbol=expand_pairlist(
+                    self.config['exchange']['pair_whitelist'], list(self.exchange.markets))[0])
+            except IndexError:
+                self.fee = None
 
-    def calculate(self) -> bool:
-        pairs = self.config['exchange']['pair_whitelist']
+    def calculate(self, pairs: List[str]) -> bool:
+        if self.fee is None and pairs:
+            self.fee = self.exchange.get_fee(pairs[0])
+
         heartbeat = self.edge_config.get('process_throttle_secs')
 
         if (self._last_updated > 0) and (
-                self._last_updated + heartbeat > arrow.utcnow().timestamp):
+                self._last_updated + heartbeat > arrow.utcnow().int_timestamp):
             return False
 
         data: Dict[str, Any] = {}
@@ -94,13 +106,33 @@ class Edge:
         logger.info('Using local backtesting data (using whitelist in given config) ...')
 
         if self._refresh_pairs:
+            timerange_startup = deepcopy(self._timerange)
+            timerange_startup.subtract_start(timeframe_to_seconds(
+                self.strategy.timeframe) * self.strategy.startup_candle_count)
             refresh_data(
                 datadir=self.config['datadir'],
                 pairs=pairs,
                 exchange=self.exchange,
                 timeframe=self.strategy.timeframe,
-                timerange=self._timerange,
+                timerange=timerange_startup,
+                data_format=self.config.get('dataformat_ohlcv', 'json'),
             )
+            # Download informative pairs too
+            res = defaultdict(list)
+            for p, t in self.strategy.informative_pairs():
+                res[t].append(p)
+            for timeframe, inf_pairs in res.items():
+                timerange_startup = deepcopy(self._timerange)
+                timerange_startup.subtract_start(timeframe_to_seconds(
+                    timeframe) * self.strategy.startup_candle_count)
+                refresh_data(
+                    datadir=self.config['datadir'],
+                    pairs=inf_pairs,
+                    exchange=self.exchange,
+                    timeframe=timeframe,
+                    timerange=timerange_startup,
+                    data_format=self.config.get('dataformat_ohlcv', 'json'),
+                )
 
         data = load_data(
             datadir=self.config['datadir'],
@@ -116,17 +148,17 @@ class Edge:
             self._cached_pairs = {}
             logger.critical("No data found. Edge is stopped ...")
             return False
-
+        # Fake run-mode to Edge
+        prior_rm = self.config['runmode']
+        self.config['runmode'] = RunMode.EDGE
         preprocessed = self.strategy.ohlcvdata_to_dataframe(data)
+        self.config['runmode'] = prior_rm
 
         # Print timeframe
         min_date, max_date = get_timerange(preprocessed)
-        logger.info(
-            'Measuring data from %s up to %s (%s days) ...',
-            min_date.isoformat(),
-            max_date.isoformat(),
-            (max_date - min_date).days
-        )
+        logger.info(f'Measuring data from {min_date.strftime(DATETIME_PRINT_FORMAT)} '
+                    f'up to {max_date.strftime(DATETIME_PRINT_FORMAT)} '
+                    f'({(max_date - min_date).days} days)..')
         headers = ['date', 'buy', 'open', 'close', 'sell', 'high', 'low']
 
         trades: list = []
@@ -148,7 +180,7 @@ class Edge:
         # Fill missing, calculable columns, profit, duration , abs etc.
         trades_df = self._fill_calculable_fields(DataFrame(trades))
         self._cached_pairs = self._process_expectancy(trades_df)
-        self._last_updated = arrow.utcnow().timestamp
+        self._last_updated = arrow.utcnow().int_timestamp
 
         return True
 
@@ -158,7 +190,8 @@ class Edge:
         available_capital = (total_capital + capital_in_trade) * self._capital_ratio
         allowed_capital_at_risk = available_capital * self._allowed_risk
         max_position_size = abs(allowed_capital_at_risk / stoploss)
-        position_size = min(max_position_size, free_capital)
+        # Position size must be below available capital.
+        position_size = min(min(max_position_size, free_capital), available_capital)
         if pair in self._cached_pairs:
             logger.info(
                 'winrate: %s, expectancy: %s, position size: %s, pair: %s,'
@@ -176,7 +209,7 @@ class Edge:
         if pair in self._cached_pairs:
             return self._cached_pairs[pair].stoploss
         else:
-            logger.warning('tried to access stoploss of a non-existing pair, '
+            logger.warning(f'Tried to access stoploss of non-existing pair {pair}, '
                            'strategy stoploss is returned instead.')
             return self.strategy.stoploss
 
@@ -207,7 +240,7 @@ class Edge:
 
         return self._final_pairs
 
-    def accepted_pairs(self) -> list:
+    def accepted_pairs(self) -> List[Dict[str, Any]]:
         """
         return a list of accepted pairs along with their winrate, expectancy and stoploss
         """
@@ -240,7 +273,7 @@ class Edge:
         # All returned values are relative, they are defined as ratios.
         stake = 0.015
 
-        result['trade_duration'] = result['close_time'] - result['open_time']
+        result['trade_duration'] = result['close_date'] - result['open_date']
 
         result['trade_duration'] = result['trade_duration'].map(
             lambda x: int(x.total_seconds() / 60))
@@ -268,7 +301,7 @@ class Edge:
     def _process_expectancy(self, results: DataFrame) -> Dict[str, Any]:
         """
         This calculates WinRate, Required Risk Reward, Risk Reward and Expectancy of all pairs
-        The calulation will be done per pair and per strategy.
+        The calculation will be done per pair and per strategy.
         """
         # Removing pairs having less than min_trades_number
         min_trades_number = self.edge_config.get('min_trade_number', 10)
@@ -312,8 +345,10 @@ class Edge:
 
         # Calculating number of losing trades, average win and average loss
         df['nb_loss_trades'] = df['nb_trades'] - df['nb_win_trades']
-        df['average_win'] = df['profit_sum'] / df['nb_win_trades']
-        df['average_loss'] = df['loss_sum'] / df['nb_loss_trades']
+        df['average_win'] = np.where(df['nb_win_trades'] == 0, 0.0,
+                                     df['profit_sum'] / df['nb_win_trades'])
+        df['average_loss'] = np.where(df['nb_loss_trades'] == 0, 0.0,
+                                      df['loss_sum'] / df['nb_loss_trades'])
 
         # Win rate = number of profitable trades / number of trades
         df['winrate'] = df['nb_win_trades'] / df['nb_trades']
@@ -430,10 +465,8 @@ class Edge:
                      'stoploss': stoploss,
                      'profit_ratio': '',
                      'profit_abs': '',
-                     'open_time': date_column[open_trade_index],
-                     'close_time': date_column[exit_index],
-                     'open_index': start_point + open_trade_index,
-                     'close_index': start_point + exit_index,
+                     'open_date': date_column[open_trade_index],
+                     'close_date': date_column[exit_index],
                      'trade_duration': '',
                      'open_rate': round(open_price, 15),
                      'close_rate': round(exit_price, 15),

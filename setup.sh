@@ -17,34 +17,20 @@ function check_installed_python() {
         exit 2
     fi
 
-    which python3.8
-    if [ $? -eq 0 ]; then
-        echo "using Python 3.8"
-        PYTHON=python3.8
-        check_installed_pip
-        return
-    fi
+    for v in 8 9 7
+    do
+        PYTHON="python3.${v}"
+        which $PYTHON
+        if [ $? -eq 0 ]; then
+            echo "using ${PYTHON}"
 
-    which python3.7
-    if [ $? -eq 0 ]; then
-        echo "using Python 3.7"
-        PYTHON=python3.7
-        check_installed_pip
-        return
-    fi
+            check_installed_pip
+            return
+        fi
+    done 
 
-    which python3.6
-    if [ $? -eq 0 ]; then
-        echo "using Python 3.6"
-        PYTHON=python3.6
-        check_installed_pip
-        return
-   fi
-
-   if [ -z ${PYTHON} ]; then
-        echo "No usable python found. Please make sure to have python3.6 or python3.7 installed"
-        exit 1
-   fi
+    echo "No usable python found. Please make sure to have python3.7 or newer installed"
+    exit 1
 }
 
 function updateenv() {
@@ -56,18 +42,45 @@ function updateenv() {
         exit 1
     fi
     source .env/bin/activate
+    SYS_ARCH=$(uname -m)
     echo "pip install in-progress. Please wait..."
     ${PYTHON} -m pip install --upgrade pip
     read -p "Do you want to install dependencies for dev [y/N]? "
     if [[ $REPLY =~ ^[Yy]$ ]]
     then
-        ${PYTHON} -m pip install --upgrade -r requirements-dev.txt
+        REQUIREMENTS=requirements-dev.txt
     else
-        ${PYTHON} -m pip install --upgrade -r requirements.txt
-        echo "Dev dependencies ignored."
+        REQUIREMENTS=requirements.txt
+    fi
+    REQUIREMENTS_HYPEROPT=""
+    REQUIREMENTS_PLOT=""
+     read -p "Do you want to install plotting dependencies (plotly) [y/N]? "
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+        REQUIREMENTS_PLOT="-r requirements-plot.txt"
+    fi
+    if [ "${SYS_ARCH}" == "armv7l" ]; then
+        echo "Detected Raspberry, installing cython, skipping hyperopt installation."
+        ${PYTHON} -m pip install --upgrade cython
+    else
+        # Is not Raspberry
+        read -p "Do you want to install hyperopt dependencies [y/N]? "
+        if [[ $REPLY =~ ^[Yy]$ ]]
+        then
+            REQUIREMENTS_HYPEROPT="-r requirements-hyperopt.txt"
+        fi
     fi
 
+    ${PYTHON} -m pip install --upgrade -r ${REQUIREMENTS} ${REQUIREMENTS_HYPEROPT} ${REQUIREMENTS_PLOT}
+    if [ $? -ne 0 ]; then
+        echo "Failed installing dependencies"
+        exit 1
+    fi
     ${PYTHON} -m pip install -e .
+    if [ $? -ne 0 ]; then
+        echo "Failed installing Freqtrade"
+        exit 1
+    fi
     echo "pip install completed"
     echo
 }
@@ -94,6 +107,25 @@ function install_talib() {
     cd ..
 }
 
+function install_mac_newer_python_dependencies() {    
+    
+    if [ ! $(brew --prefix --installed hdf5 2>/dev/null) ]
+    then
+        echo "-------------------------"
+        echo "Installing hdf5"
+        echo "-------------------------"
+        brew install hdf5
+    fi
+
+    if [ ! $(brew --prefix --installed c-blosc 2>/dev/null) ]
+    then
+        echo "-------------------------"
+        echo "Installing c-blosc"
+        echo "-------------------------"
+        brew install c-blosc
+    fi    
+}
+
 # Install bot MacOS
 function install_macos() {
     if [ ! -x "$(command -v brew)" ]
@@ -103,14 +135,19 @@ function install_macos() {
         echo "-------------------------"
         /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
     fi
+    #Gets number after decimal in python version
+    version=$(egrep -o 3.\[0-9\]+ <<< $PYTHON | sed 's/3.//g' ) 
+    
+    if [[ $version -ge 9 ]]; then               #Checks if python version >= 3.9
+        install_mac_newer_python_dependencies
+    fi
     install_talib
-    test_and_fix_python_on_mac
 }
 
 # Install bot Debian_ubuntu
 function install_debian() {
     sudo apt-get update
-    sudo apt-get install -y build-essential autoconf libtool pkg-config make wget git
+    sudo apt-get install -y build-essential autoconf libtool pkg-config make wget git libpython3-dev
     install_talib
 }
 
@@ -120,13 +157,13 @@ function update() {
     updateenv
 }
 
-# Reset Develop or Master branch
+# Reset Develop or Stable branch
 function reset() {
     echo "----------------------------"
     echo "Reseting branch and virtual env"
     echo "----------------------------"
 
-    if [ "1" == $(git branch -vv |grep -cE "\* develop|\* master") ]
+    if [ "1" == $(git branch -vv |grep -cE "\* develop|\* stable") ]
     then
 
         read -p "Reset git branch? (This will remove all changes you made!) [y/N]? "
@@ -134,22 +171,22 @@ function reset() {
 
             git fetch -a
 
-            if [ "1" == $(git branch -vv |grep -c "* develop") ]
+            if [ "1" == $(git branch -vv | grep -c "* develop") ]
             then
                 echo "- Hard resetting of 'develop' branch."
                 git reset --hard origin/develop
-            elif [ "1" == $(git branch -vv |grep -c "* master") ]
+            elif [ "1" == $(git branch -vv | grep -c "* stable") ]
             then
-                echo "- Hard resetting of 'master' branch."
-                git reset --hard origin/master
+                echo "- Hard resetting of 'stable' branch."
+                git reset --hard origin/stable
             fi
         fi
     else
-        echo "Reset ignored because you are not on 'master' or 'develop'."
+        echo "Reset ignored because you are not on 'stable' or 'develop'."
     fi
 
     if [ -d ".env" ]; then
-        echo "- Delete your previous virtual env"
+        echo "- Deleting your previous virtual env"
         rm -rf .env
     fi
     echo
@@ -159,65 +196,6 @@ function reset() {
         exit 1
     fi
     updateenv
-}
-
-function test_and_fix_python_on_mac() {
-
-    if ! [ -x "$(command -v python3.6)" ]
-    then
-        echo "-------------------------"
-        echo "Fixing Python"
-        echo "-------------------------"
-        echo "Python 3.6 is not linked in your system. Fixing it..."
-        brew link --overwrite python
-        echo
-    fi
-}
-
-function config_generator() {
-
-    echo "Starting to generate config.json"
-    echo
-    echo "Generating General configuration"
-    echo "-------------------------"
-    default_max_trades=3
-    read -p "Max open trades: (Default: $default_max_trades) " max_trades
-    max_trades=${max_trades:-$default_max_trades}
-
-    default_stake_amount=0.05
-    read -p "Stake amount: (Default: $default_stake_amount) " stake_amount
-    stake_amount=${stake_amount:-$default_stake_amount}
-
-    default_stake_currency="BTC"
-    read -p "Stake currency: (Default: $default_stake_currency) " stake_currency
-    stake_currency=${stake_currency:-$default_stake_currency}
-
-    default_fiat_currency="USD"
-    read -p "Fiat currency: (Default: $default_fiat_currency) " fiat_currency
-    fiat_currency=${fiat_currency:-$default_fiat_currency}
-
-    echo
-    echo "Generating exchange config "
-    echo "------------------------"
-    read -p "Exchange API key: " api_key
-    read -p "Exchange API Secret: " api_secret
-
-    echo
-    echo "Generating Telegram config"
-    echo "-------------------------"
-    read -p "Telegram Token: " token
-    read -p "Telegram Chat_id: " chat_id
-
-    sed -e "s/\"max_open_trades\": 3,/\"max_open_trades\": $max_trades,/g" \
-        -e "s/\"stake_amount\": 0.05,/\"stake_amount\": $stake_amount,/g" \
-        -e "s/\"stake_currency\": \"BTC\",/\"stake_currency\": \"$stake_currency\",/g" \
-        -e "s/\"fiat_display_currency\": \"USD\",/\"fiat_display_currency\": \"$fiat_currency\",/g" \
-        -e "s/\"your_exchange_key\"/\"$api_key\"/g" \
-        -e "s/\"your_exchange_secret\"/\"$api_secret\"/g" \
-        -e "s/\"your_telegram_token\"/\"$token\"/g" \
-        -e "s/\"your_telegram_chat_id\"/\"$chat_id\"/g" \
-        -e "s/\"dry_run\": false,/\"dry_run\": true,/g" config.json.example > config.json
-
 }
 
 function config() {
@@ -253,7 +231,7 @@ function install() {
     echo "Run the bot !"
     echo "-------------------------"
     echo "You can now use the bot by executing 'source .env/bin/activate; freqtrade <subcommand>'."
-    echo "You can see the list of available bot subcommands by executing 'source .env/bin/activate; freqtrade --help'."
+    echo "You can see the list of available bot sub-commands by executing 'source .env/bin/activate; freqtrade --help'."
     echo "You verify that freqtrade is installed successfully by running 'source .env/bin/activate; freqtrade --version'."
 }
 
@@ -270,12 +248,12 @@ function help() {
     echo "usage:"
     echo "	-i,--install    Install freqtrade from scratch"
     echo "	-u,--update     Command git pull to update."
-    echo "	-r,--reset      Hard reset your develop/master branch."
+    echo "	-r,--reset      Hard reset your develop/stable branch."
     echo "	-c,--config     Easy config generator (Will override your existing file)."
     echo "	-p,--plot       Install dependencies for Plotting scripts."
 }
 
-# Verify if 3.6 or 3.7 is installed
+# Verify if 3.7 or 3.8 is installed
 check_installed_python
 
 case $* in

@@ -1,13 +1,17 @@
 import logging
+import secrets
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from questionary import Separator, prompt
 
+from freqtrade.configuration.directory_operations import chown_user_directory
 from freqtrade.constants import UNLIMITED_STAKE_AMOUNT
-from freqtrade.exchange import available_exchanges, MAP_EXCHANGE_CHILDCLASS
-from freqtrade.misc import render_template
 from freqtrade.exceptions import OperationalException
+from freqtrade.exchange import MAP_EXCHANGE_CHILDCLASS, available_exchanges
+from freqtrade.misc import render_template
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +50,7 @@ def ask_user_config() -> Dict[str, Any]:
     Interactive questions built using https://github.com/tmbo/questionary
     :returns: Dict with keys to put into template
     """
-    questions = [
+    questions: List[Dict[str, Any]] = [
         {
             "type": "confirm",
             "name": "dry_run",
@@ -91,10 +95,10 @@ def ask_user_config() -> Dict[str, Any]:
             "message": "Select exchange",
             "choices": [
                 "binance",
-                "binanceje",
                 "binanceus",
                 "bittrex",
                 "kraken",
+                "ftx",
                 Separator(),
                 "other",
             ],
@@ -136,12 +140,41 @@ def ask_user_config() -> Dict[str, Any]:
             "message": "Insert Telegram chat id",
             "when": lambda x: x['telegram']
         },
+        {
+            "type": "confirm",
+            "name": "api_server",
+            "message": "Do you want to enable the Rest API (includes FreqUI)?",
+            "default": False,
+        },
+        {
+            "type": "text",
+            "name": "api_server_listen_addr",
+            "message": "Insert Api server Listen Address (best left untouched default!)",
+            "default": "127.0.0.1",
+            "when": lambda x: x['api_server']
+        },
+        {
+            "type": "text",
+            "name": "api_server_username",
+            "message": "Insert api-server username",
+            "default": "freqtrader",
+            "when": lambda x: x['api_server']
+        },
+        {
+            "type": "text",
+            "name": "api_server_password",
+            "message": "Insert api-server password",
+            "when": lambda x: x['api_server']
+        },
     ]
     answers = prompt(questions)
 
     if not answers:
         # Interrupted questionary sessions return an empty dict.
         raise OperationalException("User interrupted interactive questions.")
+
+    # Force JWT token to be a random string
+    answers['api_server_jwt_key'] = secrets.token_hex()
 
     return answers
 
@@ -150,7 +183,7 @@ def deploy_new_config(config_path: Path, selections: Dict[str, Any]) -> None:
     """
     Applies selections to the template and writes the result to config_path
     :param config_path: Path object for new config file. Should not exist yet
-    :param selecions: Dict containing selections taken by the user.
+    :param selections: Dict containing selections taken by the user.
     """
     from jinja2.exceptions import TemplateNotFound
     try:
@@ -171,16 +204,20 @@ def deploy_new_config(config_path: Path, selections: Dict[str, Any]) -> None:
                                   arguments=selections)
 
     logger.info(f"Writing config to `{config_path}`.")
+    logger.info(
+        "Please make sure to check the configuration contents and adjust settings to your needs.")
+
     config_path.write_text(config_text)
 
 
 def start_new_config(args: Dict[str, Any]) -> None:
     """
     Create a new strategy from a template
-    Asking the user questions to fill out the templateaccordingly.
+    Asking the user questions to fill out the template accordingly.
     """
 
     config_path = Path(args['config'][0])
+    chown_user_directory(config_path.parent)
     if config_path.exists():
         overwrite = ask_user_overwrite(config_path)
         if overwrite:

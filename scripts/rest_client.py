@@ -10,8 +10,8 @@ so it can be used as a standalone script.
 import argparse
 import inspect
 import json
-import re
 import logging
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -19,6 +19,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 import rapidjson
 import requests
 from requests.exceptions import ConnectionError
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,8 +111,23 @@ class FtRestClient():
         """
         return self._get("count")
 
+    def locks(self):
+        """Return current locks
+
+        :return: json object
+        """
+        return self._get("locks")
+
+    def delete_lock(self, lock_id):
+        """Delete (disable) lock from the database.
+
+        :param lock_id: ID for the lock to delete
+        :return: json object
+        """
+        return self._delete("locks/{}".format(lock_id))
+
     def daily(self, days=None):
-        """Return the amount of open trades.
+        """Return the profits for each day, and amount of trades.
 
         :return: json object
         """
@@ -130,6 +146,13 @@ class FtRestClient():
         :return: json object
         """
         return self._get("profit")
+
+    def stats(self):
+        """Return the stats report (durations, sell-reasons).
+
+        :return: json object
+        """
+        return self._get("stats")
 
     def performance(self):
         """Return the performance of the different coins.
@@ -159,13 +182,45 @@ class FtRestClient():
         """
         return self._get("show_config")
 
-    def trades(self, limit=None):
-        """Return trades history.
+    def ping(self):
+        """simple ping"""
+        configstatus = self.show_config()
+        if not configstatus:
+            return {"status": "not_running"}
+        elif configstatus['state'] == "running":
+            return {"status": "pong"}
+        else:
+            return {"status": "not_running"}
 
-        :param limit: Limits trades to the X last trades. No limit to get all the trades.
+    def logs(self, limit=None):
+        """Show latest logs.
+
+        :param limit: Limits log messages to the last <limit> logs. No limit to get the entire log.
         :return: json object
         """
-        return self._get("trades", params={"limit": limit} if limit else 0)
+        return self._get("logs", params={"limit": limit} if limit else 0)
+
+    def trades(self, limit=None, offset=None):
+        """Return trades history, sorted by id
+
+        :param limit: Limits trades to the X last trades. Max 500 trades.
+        :param offset: Offset by this amount of trades.
+        :return: json object
+        """
+        params = {}
+        if limit:
+            params['limit'] = limit
+        if offset:
+            params['offset'] = offset
+        return self._get("trades", params)
+
+    def trade(self, trade_id):
+        """Return specific trade
+
+        :param trade_id: Specify which trade to get.
+        :return: json object
+        """
+        return self._get("trade/{}".format(trade_id))
 
     def delete_trade(self, trade_id):
         """Delete trade from the database.
@@ -214,6 +269,70 @@ class FtRestClient():
         """
 
         return self._post("forcesell", data={"tradeid": tradeid})
+
+    def strategies(self):
+        """Lists available strategies
+
+        :return: json object
+        """
+        return self._get("strategies")
+
+    def strategy(self, strategy):
+        """Get strategy details
+
+        :param strategy: Strategy class name
+        :return: json object
+        """
+        return self._get(f"strategy/{strategy}")
+
+    def plot_config(self):
+        """Return plot configuration if the strategy defines one.
+
+        :return: json object
+        """
+        return self._get("plot_config")
+
+    def available_pairs(self, timeframe=None, stake_currency=None):
+        """Return available pair (backtest data) based on timeframe / stake_currency selection
+
+        :param timeframe: Only pairs with this timeframe available.
+        :param stake_currency: Only pairs that include this timeframe
+        :return: json object
+        """
+        return self._get("available_pairs", params={
+            "stake_currency": stake_currency if timeframe else '',
+            "timeframe": timeframe if timeframe else '',
+        })
+
+    def pair_candles(self, pair, timeframe, limit=None):
+        """Return live dataframe for <pair><timeframe>.
+
+        :param pair: Pair to get data for
+        :param timeframe: Only pairs with this timeframe available.
+        :param limit: Limit result to the last n candles.
+        :return: json object
+        """
+        return self._get("available_pairs", params={
+            "pair": pair,
+            "timeframe": timeframe,
+            "limit": limit,
+        })
+
+    def pair_history(self, pair, timeframe, strategy, timerange=None):
+        """Return historic, analyzed dataframe
+
+        :param pair: Pair to get data for
+        :param timeframe: Only pairs with this timeframe available.
+        :param strategy: Strategy to analyze and get values for
+        :param timerange: Timerange to get data for (same format than --timerange endpoints)
+        :return: json object
+        """
+        return self._get("pair_history", params={
+            "pair": pair,
+            "timeframe": timeframe,
+            "strategy": strategy,
+            "timerange": timerange if timerange else '',
+        })
 
 
 def add_arguments():
@@ -276,11 +395,11 @@ def main(args):
         print_commands()
         sys.exit()
 
-    config = load_config(args["config"])
-    url = config.get("api_server", {}).get("server_url", "127.0.0.1")
-    port = config.get("api_server", {}).get("listen_port", "8080")
-    username = config.get("api_server", {}).get("username")
-    password = config.get("api_server", {}).get("password")
+    config = load_config(args['config'])
+    url = config.get('api_server', {}).get('listen_ip_address', '127.0.0.1')
+    port = config.get('api_server', {}).get('listen_port', '8080')
+    username = config.get('api_server', {}).get('username')
+    password = config.get('api_server', {}).get('password')
 
     server_url = f"http://{url}:{port}"
     client = FtRestClient(server_url, username, password)
@@ -292,7 +411,7 @@ def main(args):
         print_commands()
         return
 
-    print(getattr(client, command)(*args["command_arguments"]))
+    print(json.dumps(getattr(client, command)(*args["command_arguments"])))
 
 
 if __name__ == "__main__":

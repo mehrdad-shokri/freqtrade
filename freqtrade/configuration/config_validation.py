@@ -6,8 +6,9 @@ from jsonschema import Draft4Validator, validators
 from jsonschema.exceptions import ValidationError, best_match
 
 from freqtrade import constants
+from freqtrade.enums import RunMode
 from freqtrade.exceptions import OperationalException
-from freqtrade.state import RunMode
+
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ def validate_config_schema(conf: Dict[str, Any]) -> Dict[str, Any]:
     conf_schema = deepcopy(constants.CONF_SCHEMA)
     if conf.get('runmode', RunMode.OTHER) in (RunMode.DRY_RUN, RunMode.LIVE):
         conf_schema['required'] = constants.SCHEMA_TRADE_REQUIRED
+    elif conf.get('runmode', RunMode.OTHER) in (RunMode.BACKTEST, RunMode.HYPEROPT):
+        conf_schema['required'] = constants.SCHEMA_BACKTEST_REQUIRED
     else:
         conf_schema['required'] = constants.SCHEMA_MINIMAL_REQUIRED
     try:
@@ -53,7 +56,7 @@ def validate_config_schema(conf: Dict[str, Any]) -> Dict[str, Any]:
         return conf
     except ValidationError as e:
         logger.critical(
-            f"Invalid configuration. See config.json.example. Reason: {e}"
+            f"Invalid configuration. Reason: {e}"
         )
         raise ValidationError(
             best_match(Draft4Validator(conf_schema).iter_errors(conf)).message
@@ -71,9 +74,12 @@ def validate_config_consistency(conf: Dict[str, Any]) -> None:
 
     # validating trailing stoploss
     _validate_trailing_stoploss(conf)
+    _validate_price_config(conf)
     _validate_edge(conf)
     _validate_whitelist(conf)
+    _validate_protections(conf)
     _validate_unlimited_amount(conf)
+    _validate_ask_orderbook(conf)
 
     # validate configuration before returning
     logger.info('Validating configuration ...')
@@ -89,6 +95,19 @@ def _validate_unlimited_amount(conf: Dict[str, Any]) -> None:
        and conf.get('max_open_trades') == float('inf')
        and conf.get('stake_amount') == constants.UNLIMITED_STAKE_AMOUNT):
         raise OperationalException("`max_open_trades` and `stake_amount` cannot both be unlimited.")
+
+
+def _validate_price_config(conf: Dict[str, Any]) -> None:
+    """
+    When using market orders, price sides must be using the "other" side of the price
+    """
+    if (conf.get('order_types', {}).get('buy') == 'market'
+            and conf.get('bid_strategy', {}).get('price_side') != 'ask'):
+        raise OperationalException('Market buy orders require bid_strategy.price_side = "ask".')
+
+    if (conf.get('order_types', {}).get('sell') == 'market'
+            and conf.get('ask_strategy', {}).get('price_side') != 'bid'):
+        raise OperationalException('Market sell orders require ask_strategy.price_side = "bid".')
 
 
 def _validate_trailing_stoploss(conf: Dict[str, Any]) -> None:
@@ -131,10 +150,9 @@ def _validate_edge(conf: Dict[str, Any]) -> None:
     if not conf.get('edge', {}).get('enabled'):
         return
 
-    if conf.get('pairlist', {}).get('method') == 'VolumePairList':
+    if not conf.get('use_sell_signal', True):
         raise OperationalException(
-            "Edge and VolumePairList are incompatible, "
-            "Edge will override whatever pairs VolumePairlist selects."
+            "Edge requires `use_sell_signal` to be True, otherwise no sells will happen."
         )
 
 
@@ -150,3 +168,42 @@ def _validate_whitelist(conf: Dict[str, Any]) -> None:
         if (pl.get('method') == 'StaticPairList'
                 and not conf.get('exchange', {}).get('pair_whitelist')):
             raise OperationalException("StaticPairList requires pair_whitelist to be set.")
+
+
+def _validate_protections(conf: Dict[str, Any]) -> None:
+    """
+    Validate protection configuration validity
+    """
+
+    for prot in conf.get('protections', []):
+        if ('stop_duration' in prot and 'stop_duration_candles' in prot):
+            raise OperationalException(
+                "Protections must specify either `stop_duration` or `stop_duration_candles`.\n"
+                f"Please fix the protection {prot.get('method')}"
+                )
+
+        if ('lookback_period' in prot and 'lookback_period_candles' in prot):
+            raise OperationalException(
+                "Protections must specify either `lookback_period` or `lookback_period_candles`.\n"
+                f"Please fix the protection {prot.get('method')}"
+            )
+
+
+def _validate_ask_orderbook(conf: Dict[str, Any]) -> None:
+    ask_strategy = conf.get('ask_strategy', {})
+    ob_min = ask_strategy.get('order_book_min')
+    ob_max = ask_strategy.get('order_book_max')
+    if ob_min is not None and ob_max is not None and ask_strategy.get('use_order_book'):
+        if ob_min != ob_max:
+            raise OperationalException(
+                "Using order_book_max != order_book_min in ask_strategy is no longer supported."
+                "Please pick one value and use `order_book_top` in the future."
+            )
+        else:
+            # Move value to order_book_top
+            ask_strategy['order_book_top'] = ob_min
+            logger.warning(
+                "DEPRECATED: "
+                "Please use `order_book_top` instead of `order_book_min` and `order_book_max` "
+                "for your `ask_strategy` configuration."
+            )

@@ -13,15 +13,12 @@ from typing import List, Optional, Type
 from pandas import DataFrame
 
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import ListPairsWithTimeframes
-from freqtrade.data.converter import (clean_ohlcv_dataframe,
-                                      trades_remove_duplicates, trim_dataframe)
+from freqtrade.constants import ListPairsWithTimeframes, TradeList
+from freqtrade.data.converter import clean_ohlcv_dataframe, trades_remove_duplicates, trim_dataframe
 from freqtrade.exchange import timeframe_to_seconds
 
-logger = logging.getLogger(__name__)
 
-# Type for trades list
-TradeList = List[List]
+logger = logging.getLogger(__name__)
 
 
 class IDataHandler(ABC):
@@ -50,12 +47,10 @@ class IDataHandler(ABC):
     @abstractmethod
     def ohlcv_store(self, pair: str, timeframe: str, data: DataFrame) -> None:
         """
-        Store data in json format "values".
-            format looks as follows:
-            [[<date>,<open>,<high>,<low>,<close>]]
+        Store ohlcv data.
         :param pair: Pair - used to generate filename
-        :timeframe: Timeframe - used to generate filename
-        :data: Dataframe containing OHLCV data
+        :param timeframe: Timeframe - used to generate filename
+        :param data: Dataframe containing OHLCV data
         :return: None
         """
 
@@ -239,6 +234,9 @@ def get_datahandlerclass(datatype: str) -> Type[IDataHandler]:
     elif datatype == 'jsongz':
         from .jsondatahandler import JsonGzDataHandler
         return JsonGzDataHandler
+    elif datatype == 'hdf5':
+        from .hdf5datahandler import HDF5DataHandler
+        return HDF5DataHandler
     else:
         raise ValueError(f"No datahandler for datatype {datatype} available.")
 
@@ -247,8 +245,8 @@ def get_datahandler(datadir: Path, data_format: str = None,
                     data_handler: IDataHandler = None) -> IDataHandler:
     """
     :param datadir: Folder to save data
-    :data_format: dataformat to use
-    :data_handler: returns this datahandler if it exists or initializes a new one
+    :param data_format: dataformat to use
+    :param data_handler: returns this datahandler if it exists or initializes a new one
     """
 
     if not data_handler:

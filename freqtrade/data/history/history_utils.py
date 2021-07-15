@@ -9,13 +9,13 @@ from pandas import DataFrame
 
 from freqtrade.configuration import TimeRange
 from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS
-from freqtrade.data.converter import (ohlcv_to_dataframe,
-                                      trades_remove_duplicates,
-                                      trades_to_ohlcv)
+from freqtrade.data.converter import (clean_ohlcv_dataframe, ohlcv_to_dataframe,
+                                      trades_remove_duplicates, trades_to_ohlcv)
 from freqtrade.data.history.idatahandler import IDataHandler, get_datahandler
 from freqtrade.exceptions import OperationalException
 from freqtrade.exchange import Exchange
 from freqtrade.misc import format_ms_time
+
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,7 @@ def refresh_data(datadir: Path,
     :param timeframe: Timeframe (e.g. "5m")
     :param pairs: List of pairs to load
     :param exchange: Exchange object
+    :param data_format: dataformat to use
     :param timerange: Limit data to be loaded to this timerange
     """
     data_handler = get_datahandler(datadir, data_format)
@@ -135,7 +136,6 @@ def _load_cached_data_for_updating(pair: str, timeframe: str, timerange: Optiona
     start = None
     if timerange:
         if timerange.starttype == 'date':
-            # TODO: convert to date for conversion
             start = datetime.fromtimestamp(timerange.startts, tz=timezone.utc)
 
     # Intentionally don't pass timerange in - since we need to load the full dataset.
@@ -156,6 +156,7 @@ def _load_cached_data_for_updating(pair: str, timeframe: str, timerange: Optiona
 def _download_pair_history(datadir: Path,
                            exchange: Exchange,
                            pair: str, *,
+                           new_pairs_days: int = 30,
                            timeframe: str = '5m',
                            timerange: Optional[TimeRange] = None,
                            data_handler: IDataHandler = None) -> bool:
@@ -193,8 +194,8 @@ def _download_pair_history(datadir: Path,
         new_data = exchange.get_historic_ohlcv(pair=pair,
                                                timeframe=timeframe,
                                                since_ms=since_ms if since_ms else
-                                               int(arrow.utcnow().shift(
-                                                   days=-30).float_timestamp) * 1000
+                                               arrow.utcnow().shift(
+                                                   days=-new_pairs_days).int_timestamp * 1000
                                                )
         # TODO: Maybe move parsing to exchange class (?)
         new_dataframe = ohlcv_to_dataframe(new_data, timeframe, pair,
@@ -202,7 +203,10 @@ def _download_pair_history(datadir: Path,
         if data.empty:
             data = new_dataframe
         else:
-            data = data.append(new_dataframe)
+            # Run cleaning again to ensure there were no duplicate candles
+            # Especially between existing and new data.
+            data = clean_ohlcv_dataframe(data.append(new_dataframe), timeframe, pair,
+                                         fill_missing=False, drop_incomplete=False)
 
         logger.debug("New  Start: %s",
                      f"{data.iloc[0]['date']:%Y-%m-%d %H:%M:%S}" if not data.empty else 'None')
@@ -212,17 +216,17 @@ def _download_pair_history(datadir: Path,
         data_handler.ohlcv_store(pair, timeframe, data=data)
         return True
 
-    except Exception as e:
-        logger.error(
-            f'Failed to download history data for pair: "{pair}", timeframe: {timeframe}. '
-            f'Error: {e}'
+    except Exception:
+        logger.exception(
+            f'Failed to download history data for pair: "{pair}", timeframe: {timeframe}.'
         )
         return False
 
 
 def refresh_backtest_ohlcv_data(exchange: Exchange, pairs: List[str], timeframes: List[str],
                                 datadir: Path, timerange: Optional[TimeRange] = None,
-                                erase: bool = False, data_format: str = None) -> List[str]:
+                                new_pairs_days: int = 30, erase: bool = False,
+                                data_format: str = None) -> List[str]:
     """
     Refresh stored ohlcv data for backtesting and hyperopt operations.
     Used by freqtrade download-data subcommand.
@@ -245,12 +249,14 @@ def refresh_backtest_ohlcv_data(exchange: Exchange, pairs: List[str], timeframes
             logger.info(f'Downloading pair {pair}, interval {timeframe}.')
             _download_pair_history(datadir=datadir, exchange=exchange,
                                    pair=pair, timeframe=str(timeframe),
+                                   new_pairs_days=new_pairs_days,
                                    timerange=timerange, data_handler=data_handler)
     return pairs_not_available
 
 
 def _download_trades_history(exchange: Exchange,
                              pair: str, *,
+                             new_pairs_days: int = 30,
                              timerange: Optional[TimeRange] = None,
                              data_handler: IDataHandler
                              ) -> bool:
@@ -260,9 +266,13 @@ def _download_trades_history(exchange: Exchange,
     """
     try:
 
-        since = timerange.startts * 1000 if \
-            (timerange and timerange.starttype == 'date') else int(arrow.utcnow().shift(
-                days=-30).float_timestamp) * 1000
+        until = None
+        if (timerange and timerange.starttype == 'date'):
+            since = timerange.startts * 1000
+            if timerange.stoptype == 'date':
+                until = timerange.stopts * 1000
+        else:
+            since = arrow.utcnow().shift(days=-new_pairs_days).int_timestamp * 1000
 
         trades = data_handler.trades_load(pair)
 
@@ -290,6 +300,7 @@ def _download_trades_history(exchange: Exchange,
         # Default since_ms to 30 days if nothing is given
         new_trades = exchange.get_historic_trades(pair=pair,
                                                   since=since,
+                                                  until=until,
                                                   from_id=from_id,
                                                   )
         trades.extend(new_trades[1])
@@ -302,17 +313,16 @@ def _download_trades_history(exchange: Exchange,
         logger.info(f"New Amount of trades: {len(trades)}")
         return True
 
-    except Exception as e:
-        logger.error(
+    except Exception:
+        logger.exception(
             f'Failed to download historic trades for pair: "{pair}". '
-            f'Error: {e}'
         )
         return False
 
 
 def refresh_backtest_trades_data(exchange: Exchange, pairs: List[str], datadir: Path,
-                                 timerange: TimeRange, erase: bool = False,
-                                 data_format: str = 'jsongz') -> List[str]:
+                                 timerange: TimeRange, new_pairs_days: int = 30,
+                                 erase: bool = False, data_format: str = 'jsongz') -> List[str]:
     """
     Refresh stored trades data for backtesting and hyperopt operations.
     Used by freqtrade download-data subcommand.
@@ -333,6 +343,7 @@ def refresh_backtest_trades_data(exchange: Exchange, pairs: List[str], datadir: 
         logger.info(f'Downloading trades for pair {pair}.')
         _download_trades_history(exchange=exchange,
                                  pair=pair,
+                                 new_pairs_days=new_pairs_days,
                                  timerange=timerange,
                                  data_handler=data_handler)
     return pairs_not_available
@@ -354,12 +365,15 @@ def convert_trades_to_ohlcv(pairs: List[str], timeframes: List[str],
             if erase:
                 if data_handler_ohlcv.ohlcv_purge(pair, timeframe):
                     logger.info(f'Deleting existing data for pair {pair}, interval {timeframe}.')
-            ohlcv = trades_to_ohlcv(trades, timeframe)
-            # Store ohlcv
-            data_handler_ohlcv.ohlcv_store(pair, timeframe, data=ohlcv)
+            try:
+                ohlcv = trades_to_ohlcv(trades, timeframe)
+                # Store ohlcv
+                data_handler_ohlcv.ohlcv_store(pair, timeframe, data=ohlcv)
+            except ValueError:
+                logger.exception(f'Could not convert {pair} to OHLCV.')
 
 
-def get_timerange(data: Dict[str, DataFrame]) -> Tuple[arrow.Arrow, arrow.Arrow]:
+def get_timerange(data: Dict[str, DataFrame]) -> Tuple[datetime, datetime]:
     """
     Get the maximum common timerange for the given backtest data.
 
@@ -367,7 +381,7 @@ def get_timerange(data: Dict[str, DataFrame]) -> Tuple[arrow.Arrow, arrow.Arrow]
     :return: tuple containing min_date, max_date
     """
     timeranges = [
-        (arrow.get(frame['date'].min()), arrow.get(frame['date'].max()))
+        (frame['date'].min().to_pydatetime(), frame['date'].max().to_pydatetime())
         for frame in data.values()
     ]
     return (min(timeranges, key=operator.itemgetter(0))[0],

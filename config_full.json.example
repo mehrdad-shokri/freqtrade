@@ -7,13 +7,17 @@
     "amount_reserve_percent": 0.05,
     "amend_last_stake_amount": false,
     "last_stake_amount_min_ratio": 0.5,
-    "dry_run": false,
+    "dry_run": true,
     "cancel_open_orders_on_exit": false,
     "timeframe": "5m",
     "trailing_stop": false,
     "trailing_stop_positive": 0.005,
     "trailing_stop_positive_offset": 0.0051,
     "trailing_only_offset_is_reached": false,
+    "use_sell_signal": true,
+    "sell_profit_only": false,
+    "sell_profit_offset": 0.0,
+    "ignore_roi_if_buy_signal": false,
     "minimal_roi": {
         "40":  0.0,
         "30":  0.01,
@@ -23,11 +27,12 @@
     "stoploss": -0.10,
     "unfilledtimeout": {
         "buy": 10,
-        "sell": 30
+        "sell": 30,
+        "unit": "minutes"
     },
     "bid_strategy": {
         "price_side": "bid",
-        "use_order_book": false,
+        "use_order_book": true,
         "ask_last_balance": 0.0,
         "order_book_top": 1,
         "check_depth_of_market": {
@@ -37,17 +42,15 @@
     },
     "ask_strategy":{
         "price_side": "ask",
-        "use_order_book": false,
-        "order_book_min": 1,
-        "order_book_max": 1,
-        "use_sell_signal": true,
-        "sell_profit_only": false,
-        "ignore_roi_if_buy_signal": false
+        "use_order_book": true,
+        "order_book_top": 1
     },
     "order_types": {
         "buy": "limit",
         "sell": "limit",
         "emergencysell": "market",
+        "forcesell": "market",
+        "forcebuy": "market",
         "stoploss": "market",
         "stoploss_on_exchange": false,
         "stoploss_on_exchange_interval": 60
@@ -67,31 +70,69 @@
         {"method": "AgeFilter", "min_days_listed": 10},
         {"method": "PrecisionFilter"},
         {"method": "PriceFilter", "low_price_ratio": 0.01, "min_price": 0.00000010},
-        {"method": "SpreadFilter", "max_spread_ratio": 0.005}
+        {"method": "SpreadFilter", "max_spread_ratio": 0.005},
+        {
+            "method": "RangeStabilityFilter",
+            "lookback_days": 10,
+            "min_rate_of_change": 0.01,
+            "refresh_period": 1440
+        }
+    ],
+    "protections": [
+        {
+            "method": "StoplossGuard",
+            "lookback_period_candles": 60,
+            "trade_limit": 4,
+            "stop_duration_candles": 60,
+            "only_per_pair": false
+        },
+        {
+            "method": "CooldownPeriod",
+            "stop_duration_candles": 20
+        },
+        {
+            "method": "MaxDrawdown",
+            "lookback_period_candles": 200,
+            "trade_limit": 20,
+            "stop_duration_candles": 10,
+            "max_allowed_drawdown": 0.2
+        },
+        {
+            "method": "LowProfitPairs",
+            "lookback_period_candles": 360,
+            "trade_limit": 1,
+            "stop_duration_candles": 2,
+            "required_profit": 0.02
+        }
     ],
     "exchange": {
-        "name": "bittrex",
+        "name": "binance",
         "sandbox": false,
         "key": "your_exchange_key",
         "secret": "your_exchange_secret",
         "password": "",
         "ccxt_config": {"enableRateLimit": true},
         "ccxt_async_config": {
-            "enableRateLimit": false,
+            "enableRateLimit": true,
             "rateLimit": 500,
             "aiohttp_trust_env": false
         },
         "pair_whitelist": [
+            "ALGO/BTC",
+            "ATOM/BTC",
+            "BAT/BTC",
+            "BCH/BTC",
+            "BRD/BTC",
+            "EOS/BTC",
             "ETH/BTC",
+            "IOTA/BTC",
+            "LINK/BTC",
             "LTC/BTC",
-            "ETC/BTC",
-            "DASH/BTC",
-            "ZEC/BTC",
-            "XLM/BTC",
-            "NXT/BTC",
-            "TRX/BTC",
-            "ADA/BTC",
-            "XMR/BTC"
+            "NEO/BTC",
+            "NXS/BTC",
+            "XMR/BTC",
+            "XRP/BTC",
+            "XTZ/BTC"
         ],
         "pair_blacklist": [
             "DOGE/BTC"
@@ -114,20 +155,44 @@
         "remove_pumps": false
     },
     "telegram": {
-        "enabled": true,
+        "enabled": false,
         "token": "your_telegram_token",
-        "chat_id": "your_telegram_chat_id"
+        "chat_id": "your_telegram_chat_id",
+        "notification_settings": {
+            "status": "on",
+            "warning": "on",
+            "startup": "on",
+            "buy": "on",
+            "buy_fill": "on",
+            "sell": {
+                "roi": "off",
+                "emergency_sell": "off",
+                "force_sell": "off",
+                "sell_signal": "off",
+                "trailing_stop_loss": "off",
+                "stop_loss": "off",
+                "stoploss_on_exchange": "off",
+                "custom_sell": "off"
+            },
+            "sell_fill": "on",
+            "buy_cancel": "on",
+            "sell_cancel": "on"
+        },
+        "reload": true,
+        "balance_dust_level": 0.01
     },
     "api_server": {
         "enabled": false,
         "listen_ip_address": "127.0.0.1",
         "listen_port": 8080,
-        "verbosity": "info",
+        "verbosity": "error",
+        "enable_openapi": false,
         "jwt_secret_key": "somethingrandom",
         "CORS_origins": [],
         "username": "freqtrader",
         "password": "SuperSecurePassword"
     },
+    "bot_name": "freqtrade",
     "db_url": "sqlite:///tradesv3.sqlite",
     "initial_state": "running",
     "forcebuy_enable": false,
