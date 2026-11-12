@@ -3,300 +3,435 @@ name: Freqtrade CI
 on:
   push:
     branches:
-      - master
+      - stable
       - develop
-      - github_actions_tests
+      - ci/*
     tags:
-    release:
-      types: [published]
+  release:
+    types: [published]
   pull_request:
   schedule:
-    - cron:  '0 5 * * 4'
+    - cron: "0 3 * * 4"
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}"
+  cancel-in-progress: true
+permissions: {}
 
 jobs:
-  build:
-
+  tests:
+    name: "Tests and Linting"
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ ubuntu-18.04, macos-latest ]
-        python-version: [3.7, 3.8]
+        os:
+          [
+            "ubuntu-22.04",
+            "ubuntu-24.04",
+            "ubuntu-26.04",
+            "ubuntu-24.04-arm",
+            "macos-15",
+            "macos-26",
+            "windows-2022",
+            "windows-2025",
+          ]
+        python-version: ["3.12", "3.13", "3.14"]
+        exclude:
+          - os: "ubuntu-22.04"
+            python-version: "3.13"
+          - os: "ubuntu-22.04"
+            python-version: "3.14"
+          # Reduce ARM runs to newer python versions
+          - os: "ubuntu-24.04-arm"
+            python-version: "3.12"
+          # ubuntu 26.04 has 3.14 as default python version
+          - os: "ubuntu-26.04"
+            python-version: "3.12"
+          - os: "ubuntu-26.04"
+            python-version: "3.13"
 
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Set up Python
-      uses: actions/setup-python@v1
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Install uv and Python 🐍
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+          enable-cache: true # zizmor: ignore[cache-poisoning] - this job is not used for release builds
+          prune-cache: true
+          python-version: ${{ matrix.python-version }}
+          cache-dependency-glob: "requirements**.txt"
+          cache-suffix: "${{ matrix.python-version }}"
 
-    - name: Cache_dependencies
-      uses: actions/cache@v1
-      id: cache
-      with:
-        path: ~/dependencies/
-        key: ${{ runner.os }}-dependencies
+      - name: Installation - macOS (Brew)
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          # brew update
+          # TODO: Should be the brew upgrade
+          brew install libomp
 
-    - name: pip cache (linux)
-      uses: actions/cache@preview
-      if: startsWith(matrix.os, 'ubuntu')
-      with:
-        path: ~/.cache/pip
-        key: test-${{ matrix.os }}-${{ matrix.python-version }}-pip
+      - name: Installation (python)
+        run: |
+          uv pip install -r requirements-dev.txt
+          uv pip install -e ft_client/
+          uv pip install -e .
 
-    - name: pip cache (macOS)
-      uses: actions/cache@preview
-      if: startsWith(matrix.os, 'macOS')
-      with:
-        path: ~/Library/Caches/pip
-        key: test-${{ matrix.os }}-${{ matrix.python-version }}-pip
+      - name: Check for version alignment
+        run: |
+          python build_helpers/freqtrade_client_version_align.py
 
-    - name: TA binary *nix
-      if: steps.cache.outputs.cache-hit != 'true'
-      run: |
-        cd build_helpers && ./install_ta-lib.sh ${HOME}/dependencies/; cd ..
+      - name: Tests
+        if: (!(runner.os == 'Linux' && matrix.python-version == '3.14' && matrix.os == 'ubuntu-24.04'))
+        run: |
+          pytest --random-order --durations 20 -n auto
 
-    - name: Installation - *nix
-      run: |
-        python -m pip install --upgrade pip
-        export LD_LIBRARY_PATH=${HOME}/dependencies/lib:$LD_LIBRARY_PATH
-        export TA_LIBRARY_PATH=${HOME}/dependencies/lib
-        export TA_INCLUDE_PATH=${HOME}/dependencies/include
-        pip install -r requirements-dev.txt
-        pip install -e .
+      - name: Tests with Coveralls
+        if: (runner.os == 'Linux' && matrix.python-version == '3.14' && matrix.os == 'ubuntu-24.04')
+        run: |
+          pytest --random-order --cov=freqtrade --cov=freqtrade_client --cov-config=.coveragerc
 
-    - name: Tests
-      run: |
-        pytest --random-order --cov=freqtrade --cov-config=.coveragerc
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        if: (runner.os == 'Linux' && matrix.python-version == '3.14' && matrix.os == 'ubuntu-24.04')
+        with:
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }} # zizmor: ignore[secrets-outside-env] Intentionally not using environment variable.
 
-    - name: Coveralls
-      if: (startsWith(matrix.os, 'ubuntu') && matrix.python-version == '3.8')
-      env:
-        # Coveralls token. Not used as secret due to github not providing secrets to forked repositories
-        COVERALLS_REPO_TOKEN: 6D1m0xupS3FgutfuGao8keFf9Hc0FpIXu
-      run: |
-        # Allow failure for coveralls
-        coveralls -v  || true
+      - name: Cleanup codecov dirty state files
+        if: (runner.os == 'Linux' && matrix.python-version == '3.14' && matrix.os == 'ubuntu-24.04')
+        run: |
+          # See https://github.com/codecov/codecov-action/issues/1851
+          rm -rf codecov codecov.SHA256SUM codecov.SHA256SUM.sig
 
-    - name: Backtesting
-      run: |
-        cp config.json.example config.json
-        freqtrade create-userdir --userdir user_data
-        freqtrade backtesting --datadir tests/testdata --strategy SampleStrategy
+      - name: Run json schema extract
+        # This must be kept before the repository check to ensure that the schema is up-to-date
+        run: |
+          python build_helpers/extract_config_json_schema.py
 
-    - name: Hyperopt
-      run: |
-        cp config.json.example config.json
-        freqtrade create-userdir --userdir user_data
-        freqtrade hyperopt --datadir tests/testdata -e 5 --strategy SampleStrategy --hyperopt SampleHyperOpt
+      - name: Run command docs partials extract
+        # This must be kept before the repository check to ensure that the docs are up-to-date
+        if: ${{ (matrix.python-version == '3.13') }}
+        run: |
+          python build_helpers/create_command_partials.py
 
-    - name: Flake8
-      run: |
-        flake8
+      - name: Check for repository changes - *nix
+        if: ${{ (runner.os != 'Windows') }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Repository is dirty, changes detected:"
+            git status
+            git diff
+            exit 1
+          else
+            echo "Repository is clean, no changes detected."
+          fi
 
-    - name: Mypy
-      run: |
-        mypy freqtrade scripts
+      - name: Check for repository changes - Windows
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          if (git status --porcelain) {
+            Write-Host "Repository is dirty, changes detected:"
+            git status
+            git diff
+            exit 1
+          }
+          else {
+            Write-Host "Repository is clean, no changes detected."
+          }
 
-    - name: Slack Notification
-      uses: homoluctus/slatify@v1.8.0
-      if: failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-      with:
-        type: ${{ job.status }}
-        job_name: '*Freqtrade CI ${{ matrix.os }}*'
-        mention: 'here'
-        mention_if: 'failure'
-        channel: '#notifications'
-        url: ${{ secrets.SLACK_WEBHOOK }}
+      - name: Backtesting (multi)
+        run: |
+          freqtrade create-userdir --userdir user_data
+          cp tests/testdata/config.tests.json user_data/config.json
+          freqtrade new-strategy -s AwesomeStrategy
+          freqtrade new-strategy -s AwesomeStrategyMin --template minimal
+          freqtrade new-strategy -s AwesomeStrategyAdv --template advanced
+          freqtrade backtesting --datadir tests/testdata --strategy-list AwesomeStrategy AwesomeStrategyMin AwesomeStrategyAdv -i 5m
 
-  build_windows:
+      - name: Hyperopt
+        run: |
+          cp tests/testdata/config.tests.json config.json
+          freqtrade create-userdir --userdir user_data
+          freqtrade hyperopt --datadir tests/testdata -e 6 --strategy SampleStrategy --hyperopt-loss SharpeHyperOptLossDaily --print-all
 
-    runs-on: ${{ matrix.os }}
+      - name: Run Ruff
+        run: |
+          ruff check --output-format=github
+
+      - name: Run Ruff format check
+        run: |
+          ruff format --check
+
+      - name: Mypy
+        if: ${{ matrix.os == 'ubuntu-24.04' || matrix.os == 'macos-15' }}
+        run: |
+          mypy freqtrade scripts tests
+
+      - name: Run Pester tests (PowerShell)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $PSVersionTable
+          Install-PSResource -Name Pester -Version '[5.7.1]' -TrustRepository -Reinstall
+          $Error.clear()
+
+          # Override Clear-Host globally to prevent headless console crashes
+          Function Clear-Host { }
+
+          Invoke-Pester -Path "tests" -CI
+          if ($Error.Length -gt 0) {exit 1}
+
+      - name: Discord notification
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708 # v1.16.0
+        if: ${{ failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) }}
+        with:
+          color: "#FF0000" # red
+          title: Freqtrade CI failed on ${{ matrix.os }} with Python ${{ matrix.python-version }}!
+          webhook: ${{ secrets.DISCORD_WEBHOOK }} # zizmor: ignore[secrets-outside-env] Intentionally not using environment variable.
+
+  mypy-version-check:
+    name: "Mypy Version Check"
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python 🐍
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+          python-version: "3.13"
+          enable-cache: false
+
+      - name: pre-commit dependencies
+        run: |
+          uv pip install $(grep -E "^pyyaml==" requirements-dev.txt)
+          python build_helpers/pre_commit_update.py
+
+  pre-commit:
+    name: "Pre-commit checks"
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 🐍
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+
+  docs-check:
+    name: "Documentation build"
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Documentation syntax
+        run: |
+          ./tests/test_docs.sh
+
+      - name: Install uv and Python 🐍
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+          python-version: "3.13"
+          enable-cache: false
+
+      - name: Documentation build
+        run: |
+          uv pip install -r docs/requirements-docs.txt
+          mkdocs build
+
+      - name: Discord notification
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708 # v1.16.0
+        if: failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        with:
+          color: "#FF0000" # red
+          title: Freqtrade doc test failed!
+          webhook: ${{ secrets.DISCORD_WEBHOOK }} # zizmor: ignore[secrets-outside-env] Intentionally not using environment variable.
+
+  build-linux-online:
+    # Run pytest with "live" checks
+    name: "Online / live tests"
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
-        os: [ windows-latest ]
-        python-version: [3.7, 3.8]
-
+        python-version: ["3.14"]
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Set up Python
-      uses: actions/setup-python@v1
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Install uv and Python 🐍
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+          enable-cache: true # zizmor: ignore[cache-poisoning] - this job is not used for release builds
+          prune-cache: true
+          python-version: "${{ matrix.python-version }}"
+          cache-dependency-glob: "requirements**.txt"
+          cache-suffix: "${{ matrix.python-version }}"
 
-    - name: Pip cache (Windows)
-      uses: actions/cache@preview
-      if: startsWith(runner.os, 'Windows')
-      with:
-        path: ~\AppData\Local\pip\Cache
-        key: ${{ matrix.os }}-${{ matrix.python-version }}-pip
+      - name: Installation - *nix
+        run: |
+          uv pip install -r requirements-dev.txt
+          uv pip install -e ft_client/
+          uv pip install -e .
 
-    - name: Installation
-      run: |
-        ./build_helpers/install_windows.ps1
+      - name: Tests incl. ccxt compatibility tests
+        env:
+          CI_WEB_PROXY: http://140.238.213.2:13128
+        run: |
+          pytest --random-order --longrun --durations 20 -n auto
 
-    - name: Tests
-      run: |
-        pytest --random-order --cov=freqtrade --cov-config=.coveragerc
-
-    - name: Backtesting
-      run: |
-        cp config.json.example config.json
-        freqtrade create-userdir --userdir user_data
-        freqtrade backtesting --datadir tests/testdata --strategy SampleStrategy
-
-    - name: Hyperopt
-      run: |
-        cp config.json.example config.json
-        freqtrade create-userdir --userdir user_data
-        freqtrade hyperopt --datadir tests/testdata -e 5 --strategy SampleStrategy --hyperopt SampleHyperOpt
-
-    - name: Flake8
-      run: |
-        flake8
-
-    - name: Mypy
-      run: |
-        mypy freqtrade scripts
-
-    - name: Slack Notification
-      uses: homoluctus/slatify@v1.8.0
-      if: failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-      with:
-        type: ${{ job.status }}
-        job_name: '*Freqtrade CI windows*'
-        mention: 'here'
-        mention_if: 'failure'
-        channel: '#notifications'
-        url: ${{ secrets.SLACK_WEBHOOK }}
-
-  docs_check:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-
-    - name: Documentation syntax
-      run: |
-        ./tests/test_docs.sh
-
-    - name: Slack Notification
-      uses: homoluctus/slatify@v1.8.0
-      if: failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-      with:
-        type: ${{ job.status }}
-        job_name: '*Freqtrade Docs*'
-        channel: '#notifications'
-        url: ${{ secrets.SLACK_WEBHOOK }}
-
-  cleanup-prior-runs:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Cleanup previous runs on this branch
-      uses: rokroskar/workflow-run-cleanup-action@v0.2.2
-      if: "!startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/master' && github.repository == 'freqtrade/freqtrade'"
-      env:
-        GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-
-  # Notify on slack only once - when CI completes (and after deploy) in case it's successfull
+  # Notify only once - when CI completes (and after deploy) in case it's successful
   notify-complete:
-    needs: [ build, build_windows, docs_check ]
-    runs-on: ubuntu-latest
+    name: "Notify CI Completion"
+    needs: [build, build-linux-online]
+    runs-on: ubuntu-26.04
+    # Discord notification can't handle schedule events
+    if: github.event_name != 'schedule' && github.repository == 'freqtrade/freqtrade'
     steps:
-    - name: Slack Notification
-      uses: homoluctus/slatify@v1.8.0
-      if: always() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-      with:
-        type: ${{ job.status }}
-        job_name: '*Freqtrade CI*'
-        channel: '#notifications'
-        url: ${{ secrets.SLACK_WEBHOOK }}
+      - name: Discord notification
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708 # v1.16.0
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+        with:
+          color: "#00FF00" # green
+          title: Test Completed!
+          webhook: ${{ secrets.DISCORD_WEBHOOK }} # zizmor: ignore[secrets-outside-env] Intentionally not using environment variable.
 
-  deploy:
-    needs: [ build, build_windows, docs_check ]
-    runs-on: ubuntu-18.04
+  build:
+    if: always()
+    name: "Build"
+    needs: [tests, docs-check, mypy-version-check, pre-commit]
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python 🐍
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          activate-environment: true
+          python-version: "${{ matrix.python-version }}"
+          # Don't cache to avoid cache poisoning
+          enable-cache: false
+
+      - name: Build distribution
+        run: |
+          uv pip install $(grep -E "^build==" requirements-dev.txt)
+          python -m build --sdist --wheel
+
+      - name: Upload artifacts 📦
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: freqtrade-build
+          path: |
+            dist
+          retention-days: 10
+
+      - name: Build Client distribution
+        run: |
+          python -m build --sdist --wheel ft_client
+
+      - name: Upload artifacts 📦
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: freqtrade-client-build
+          path: |
+            ft_client/dist
+          retention-days: 10
+
+  deploy-test-pypi:
+    name: "Publish Python 🐍 distribution 📦 to TestPyPI"
+    needs: [build]
+    runs-on: ubuntu-26.04
+    if: (github.event_name == 'release')
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/freqtrade
+    permissions:
+      id-token: write # Needed for pypa/gh-action-pypi-publish
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download artifact  📦
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: freqtrade*-build
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI (Test)
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  deploy-pypi:
+    name: "Publish Python 🐍 distribution 📦 to PyPI"
+    needs: [build]
+    runs-on: ubuntu-26.04
+    if: (github.event_name == 'release')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/freqtrade
+    permissions:
+      id-token: write # Needed for pypa/gh-action-pypi-publish
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download artifact  📦
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: freqtrade*-build
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  docker-build:
+    name: "Docker Build and Deploy"
+    needs: [build]
     if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'release') && github.repository == 'freqtrade/freqtrade'
-    steps:
-    - uses: actions/checkout@v2
+    uses: $/.github/workflows/docker-build.yml
+    permissions:
+      packages: write # Needed to push package versions
+      contents: read
+    secrets:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }} # zizmor: ignore[secrets-outside-env] Intentionally not using environment variable.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Set up Python
-      uses: actions/setup-python@v1
-      with:
-        python-version: 3.8
-
-    - name: Extract branch name
-      shell: bash
-      run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
-      id: extract_branch
-
-    - name: Build distribution
-      run: |
-        pip install -U setuptools wheel
-        python setup.py sdist bdist_wheel
-
-    - name: Publish to PyPI (Test)
-      uses: pypa/gh-action-pypi-publish@master
-      if: (steps.extract_branch.outputs.branch == 'master' || github.event_name == 'release')
-      with:
-        user: __token__
-        password: ${{ secrets.pypi_test_password }}
-        repository_url: https://test.pypi.org/legacy/
-
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@master
-      if: (steps.extract_branch.outputs.branch == 'master' || github.event_name == 'release')
-      with:
-        user: __token__
-        password: ${{ secrets.pypi_password }}
-
-    - name: Dockerhub login
-      env:
-        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      run: |
-        echo "${DOCKER_PASSWORD}" | docker login --username ${DOCKER_USERNAME} --password-stdin
-
-    - name: Build and test and push docker image
-      env:
-        IMAGE_NAME: freqtradeorg/freqtrade
-        BRANCH_NAME: ${{ steps.extract_branch.outputs.branch }}
-      run: |
-        build_helpers/publish_docker.sh
-
-    # We need docker experimental to pull the ARM image.
-    - name: Switch docker to experimental
-      run: |
-          docker version -f '{{.Server.Experimental}}'
-          echo $'{\n    "experimental": true\n}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
-          docker version -f '{{.Server.Experimental}}'
-
-    - name: Set up Docker Buildx
-      id: buildx
-      uses: crazy-max/ghaction-docker-buildx@v1
-      with:
-        buildx-version: latest
-        qemu-version: latest
-
-    - name: Available platforms
-      run: echo ${{ steps.buildx.outputs.platforms }}
-
-    - name: Build Raspberry docker image
-      env:
-        IMAGE_NAME: freqtradeorg/freqtrade
-        BRANCH_NAME: ${{ steps.extract_branch.outputs.branch }}_pi
-      run: |
-        build_helpers/publish_docker_pi.sh
-
-
-    - name: Slack Notification
-      uses: homoluctus/slatify@v1.8.0
-      if: always() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-      with:
-        type: ${{ job.status }}
-        job_name: '*Freqtrade CI Deploy*'
-        mention: 'here'
-        mention_if: 'failure'
-        channel: '#notifications'
-        url: ${{ secrets.SLACK_WEBHOOK }}
-
+  packages-cleanup:
+    name: "Docker Package Cleanup"
+    uses: $/.github/workflows/packages-cleanup.yml
+    # Only run on push, schedule, or release events
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.repository == 'freqtrade/freqtrade'
+    permissions:
+      packages: write # Needed to delete package versions
+    with:
+      package_name: "freqtrade"

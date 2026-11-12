@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools >= 77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freqtrade-client"
+dynamic = ["version"]
+
+authors = [
+  {name = "Freqtrade Team", email = "freqtrade@protonmail.com"},
+]
+
+description = "Freqtrade - Client scripts"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+keywords = ["trading", "cryptocurrency", "bot", "freqtrade", "api-client"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: Unix",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+dependencies = [
+  'requests >= 2.26.0',
+  'python-rapidjson >= 1.0',
+]
+
+
+[project.urls]
+Homepage = "https://www.freqtrade.io"
+Documentation = "https://www.freqtrade.io"
+Source = "https://github.com/freqtrade/freqtrade"
+Issues = "https://github.com/freqtrade/freqtrade/issues"
+Changelog = "https://github.com/freqtrade/freqtrade/releases"
+
+
+[project.scripts]
+freqtrade-client = "freqtrade_client.ft_client:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["freqtrade_client*"]
+exclude = ["tests", "tests.*"]
+namespaces = true
+
+[tool.setuptools.dynamic]
+version = {attr = "freqtrade_client.__version__"}

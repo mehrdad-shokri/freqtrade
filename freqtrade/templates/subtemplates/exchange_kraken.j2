@@ -1,34 +1,11 @@
 "download_trades": true,
 "exchange": {
     "name": "kraken",
-    "key": "{{ exchange_key }}",
-    "secret": "{{ exchange_secret }}",
-    "ccxt_config": {"enableRateLimit": true},
-    "ccxt_async_config": {
-        "enableRateLimit": true,
-        "rateLimit": 1000
-    },
+    "api_key": {{ exchange_api_key | default("") | tojson }},
+    "secret": {{ exchange_secret | default("") | tojson }},
+    "ccxt_config": {},
+    "ccxt_async_config": {},
     "pair_whitelist": [
-        "ADA/EUR",
-        "ATOM/EUR",
-        "BAT/EUR",
-        "BCH/EUR",
-        "BTC/EUR",
-        "DAI/EUR",
-        "DASH/EUR",
-        "EOS/EUR",
-        "ETC/EUR",
-        "ETH/EUR",
-        "LINK/EUR",
-        "LTC/EUR",
-        "QTUM/EUR",
-        "REP/EUR",
-        "WAVES/EUR",
-        "XLM/EUR",
-        "XMR/EUR",
-        "XRP/EUR",
-        "XTZ/EUR",
-        "ZEC/EUR"
     ],
     "pair_blacklist": [
 

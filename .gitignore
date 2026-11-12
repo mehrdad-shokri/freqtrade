@@ -1,13 +1,23 @@
 # Freqtrade rules
 config*.json
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 logfile.txt
 user_data/*
 !user_data/strategy/sample_strategy.py
 !user_data/notebooks
+!user_data/models
+!user_data/freqaimodels
+user_data/freqaimodels/*
+user_data/models/*
 user_data/notebooks/*
 freqtrade-plot.html
 freqtrade-profit-plot.html
+freqtrade/rpc/api_server/ui/*
+
+# Macos related
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -72,11 +82,23 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# memray
+memray-*
+
 # Sphinx documentation
 docs/_build/
+# Mkdocs documentation
+site/
 
 # PyBuilder
 target/
+
+# AI Agents
+*.local.md
+.cursor/
+.codex/
+.claude/*.local.json
+.claude/**/*.log
 
 # Jupyter Notebook
 *.ipynb_checkpoints
@@ -89,8 +111,13 @@ target/
 .idea
 .vscode
 
-.pytest_cache/
-.mypy_cache/
+.*_cache/
 
 #exceptions
 !*.gitkeep
+!config_examples/config_binance.example.json
+!config_examples/config_full.example.json
+!config_examples/config_kraken.example.json
+!config_examples/config_freqai.example.json
+
+docker-compose-*.yml

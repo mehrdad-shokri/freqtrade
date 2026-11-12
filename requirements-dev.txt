@@ -2,17 +2,36 @@
 -r requirements.txt
 -r requirements-plot.txt
 -r requirements-hyperopt.txt
+-r requirements-freqai.txt
+-r requirements-freqai-rl.txt
+-r docs/requirements-docs.txt
 
-coveralls==2.1.2
-flake8==3.8.3
-flake8-type-annotations==0.1.0
-flake8-tidy-imports==4.1.0
-mypy==0.782
-pytest==6.0.1
-pytest-asyncio==0.14.0
-pytest-cov==2.10.1
-pytest-mock==3.2.0
-pytest-random-order==1.0.4
+ruff==0.17.3
+mypy==2.4.1
+pre-commit==4.7.0
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+pytest-cov==7.1.0
+pytest-mock==3.17.0
+pytest-random-order==1.2.0
+pytest-timeout==2.4.0
+pytest-xdist==3.8.0
+# For datetime mocking
+time-machine==3.6.0
+httpx2==2.16.0
 
 # Convert jupyter notebooks to markdown documents
-nbconvert==5.6.1
+nbconvert==7.17.2
+
+# mypy types
+scipy-stubs==1.18.1.1  # keep in sync with `scipy` in `requirements.txt`
+types-cachetools==7.0.0.20260713
+types-filelock==3.2.7
+types-requests==2.33.0.20261030
+types-tabulate==0.10.0.20261006
+types-python-dateutil==2.9.0.20261029
+pip-audit==2.10.1
+# For build step in CI
+build==1.6.1
+# For pre-commit-update check
+pyyaml==6.0.3
